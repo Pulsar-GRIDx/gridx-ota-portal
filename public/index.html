@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GRIDx OTA Portal</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Inter', sans-serif; background: #0a0e1a; color: #e0e0e0; min-height: 100vh; }
+
+    /* Login */
+    .login-container {
+      display: flex; align-items: center; justify-content: center; min-height: 100vh;
+      background: linear-gradient(135deg, #0a0e1a 0%, #111827 50%, #0d1117 100%);
+    }
+    .login-card {
+      background: #161b2e; border: 1px solid rgba(255,255,255,0.06); border-radius: 16px;
+      padding: 48px; width: 400px; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    }
+    .login-card h1 {
+      font-size: 28px; font-weight: 800; margin-bottom: 4px;
+      background: linear-gradient(135deg, #4ade80, #60a5fa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .login-card p { color: #6b7280; font-size: 13px; margin-bottom: 32px; }
+    .login-card label { display: block; font-size: 11px; font-weight: 600; color: #9ca3af; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px; }
+    .login-card input {
+      width: 100%; padding: 12px 16px; background: #0f1420; border: 1px solid #2d3548;
+      border-radius: 10px; color: #e0e0e0; font-size: 14px; margin-bottom: 20px; outline: none;
+      transition: border-color 0.2s;
+    }
+    .login-card input:focus { border-color: #60a5fa; }
+    .btn-login {
+      width: 100%; padding: 14px; background: linear-gradient(135deg, #4ade80, #22c55e);
+      border: none; border-radius: 10px; color: #000; font-size: 15px; font-weight: 700;
+      cursor: pointer; transition: opacity 0.2s;
+    }
+    .btn-login:hover { opacity: 0.9; }
+    .login-error { color: #f87171; font-size: 13px; margin-bottom: 16px; text-align: center; }
+
+    /* Layout */
+    .app { display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 240px; background: #111827; border-right: 1px solid rgba(255,255,255,0.06);
+      padding: 20px 0; display: flex; flex-direction: column;
+    }
+    .sidebar-logo { padding: 0 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    .sidebar-logo h2 {
+      font-size: 22px; font-weight: 800;
+      background: linear-gradient(135deg, #4ade80, #60a5fa);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .sidebar-logo span { font-size: 10px; color: #6b7280; text-transform: uppercase; letter-spacing: 1.5px; }
+    .sidebar-nav { padding: 12px 8px; flex: 1; }
+    .sidebar-item {
+      display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin: 2px 0;
+      border-radius: 10px; cursor: pointer; font-size: 13px; color: #9ca3af;
+      transition: all 0.2s; text-decoration: none;
+    }
+    .sidebar-item:hover { background: rgba(255,255,255,0.04); color: #e0e0e0; }
+    .sidebar-item.active { background: rgba(96,165,250,0.1); color: #60a5fa; font-weight: 600; }
+    .sidebar-item svg { width: 20px; height: 20px; }
+    .sidebar-footer {
+      padding: 12px 20px; border-top: 1px solid rgba(255,255,255,0.06);
+      font-size: 11px; color: #4b5563;
+    }
+    .sidebar-footer .logout { color: #f87171; cursor: pointer; font-size: 12px; }
+    .sidebar-footer .logout:hover { text-decoration: underline; }
+
+    /* Main content */
+    .main { flex: 1; padding: 32px; overflow-y: auto; }
+    .page-title { font-size: 28px; font-weight: 700; color: #f3f4f6; margin-bottom: 4px; }
+    .page-subtitle { font-size: 14px; color: #4ade80; margin-bottom: 24px; }
+    .divider { height: 1px; background: #4ade80; opacity: 0.3; margin-bottom: 28px; }
+
+    /* Cards */
+    .card {
+      background: #161b2e; border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 12px; padding: 24px; margin-bottom: 20px;
+    }
+    .card-title { font-size: 16px; font-weight: 600; color: #f3f4f6; margin-bottom: 16px; }
+
+    /* Info blocks */
+    .info-row { display: flex; gap: 32px; flex-wrap: wrap; }
+    .info-block label { display: block; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
+    .info-block .value { font-size: 18px; font-weight: 700; color: #4ade80; }
+    .info-block .value.blue { color: #60a5fa; }
+    .hash-text { font-family: monospace; font-size: 12px; color: #9ca3af; word-break: break-all; max-width: 500px; }
+    .copy-btn {
+      background: none; border: none; color: #6b7280; cursor: pointer; font-size: 12px;
+      padding: 2px 6px; border-radius: 4px;
+    }
+    .copy-btn:hover { background: rgba(255,255,255,0.05); color: #e0e0e0; }
+
+    /* Form elements */
+    .form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
+    .form-group { display: flex; flex-direction: column; gap: 6px; }
+    .form-group label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; }
+    .form-group input, .form-group select {
+      padding: 10px 14px; background: #0f1420; border: 1px solid #2d3548;
+      border-radius: 8px; color: #e0e0e0; font-size: 13px; outline: none;
+    }
+    .form-group input:focus { border-color: #60a5fa; }
+
+    .btn {
+      padding: 10px 20px; border: none; border-radius: 8px; font-size: 13px;
+      font-weight: 600; cursor: pointer; transition: all 0.2s; display: inline-flex;
+      align-items: center; gap: 8px;
+    }
+    .btn-primary { background: #22c55e; color: #000; }
+    .btn-primary:hover { background: #4ade80; }
+    .btn-blue { background: #3b82f6; color: #fff; }
+    .btn-blue:hover { background: #60a5fa; }
+    .btn-red { background: #dc2626; color: #fff; }
+    .btn-red:hover { background: #ef4444; }
+    .btn-outline {
+      background: transparent; color: #60a5fa; border: 1px solid #3b82f6;
+    }
+    .btn-outline:hover { background: rgba(59,130,246,0.1); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .file-btn { position: relative; overflow: hidden; }
+    .file-btn input[type="file"] {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      opacity: 0; cursor: pointer;
+    }
+
+    /* Alert */
+    .alert {
+      padding: 12px 16px; border-radius: 8px; margin-top: 16px; font-size: 13px;
+    }
+    .alert-success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.3); color: #4ade80; }
+    .alert-error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: #f87171; }
+    .alert-info { background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: #60a5fa; }
+
+    /* Table */
+    table { width: 100%; border-collapse: collapse; }
+    th { text-align: left; padding: 10px 12px; font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+    td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.04); color: #d1d5db; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    .chip {
+      display: inline-block; padding: 3px 10px; border-radius: 6px; font-size: 12px;
+      font-weight: 600; background: rgba(34,197,94,0.15); color: #4ade80;
+    }
+    .chip.blue { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .mono { font-family: monospace; font-size: 12px; color: #9ca3af; }
+
+    /* Meter checkboxes */
+    .meter-select { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
+    .meter-select input[type="checkbox"] { accent-color: #4ade80; width: 16px; height: 16px; }
+
+    /* Loading spinner */
+    .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .refresh-btn { background: none; border: none; color: #6b7280; cursor: pointer; padding: 4px; border-radius: 6px; }
+    .refresh-btn:hover { background: rgba(255,255,255,0.05); color: #e0e0e0; }
+
+    .description { font-size: 13px; color: #6b7280; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script>
+    // ═══════════════════════════════════════════════════════════
+    // GRIDx OTA Portal - Single Page Application
+    // ═══════════════════════════════════════════════════════════
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+
+    const state = {
+      token: sessionStorage.getItem('ota_token'),
+      user: JSON.parse(sessionStorage.getItem('ota_user') || 'null'),
+      firmware: null,
+      versions: [],
+      meters: [],
+      loading: {},
+    };
+
+    // ─── API helpers ───
+    async function api(url, options = {}) {
+      const headers = { ...(options.headers || {}) };
+      if (state.token) headers['Authorization'] = `Bearer ${state.token}`;
+      if (!(options.body instanceof FormData)) headers['Content-Type'] = 'application/json';
+
+      const res = await fetch(url, { ...options, headers });
+      if (res.status === 401) { logout(); throw new Error('Session expired'); }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+
+    function logout() {
+      sessionStorage.removeItem('ota_token');
+      sessionStorage.removeItem('ota_user');
+      state.token = null;
+      state.user = null;
+      render();
+    }
+
+    // ─── Render ───
+    function render() {
+      const app = $('#app');
+      if (!state.token) {
+        app.innerHTML = renderLogin();
+        bindLogin();
+      } else {
+        app.innerHTML = renderApp();
+        bindApp();
+        loadData();
+      }
+    }
+
+    // ─── Login page ───
+    function renderLogin() {
+      return `
+        <div class="login-container">
+          <div class="login-card">
+            <h1>GRIDx</h1>
+            <p>Firmware OTA Portal</p>
+            <div id="login-error" class="login-error" style="display:none"></div>
+            <label>Username</label>
+            <input type="text" id="login-user" placeholder="Enter username" autocomplete="username">
+            <label>Password</label>
+            <input type="password" id="login-pass" placeholder="Enter password" autocomplete="current-password">
+            <button class="btn-login" id="login-btn">Sign In</button>
+          </div>
+        </div>
+      `;
+    }
+
+    function bindLogin() {
+      const btn = $('#login-btn');
+      const doLogin = async () => {
+        const username = $('#login-user').value;
+        const password = $('#login-pass').value;
+        if (!username || !password) return;
+        btn.disabled = true;
+        btn.textContent = 'Signing in...';
+        try {
+          const data = await api('/api/login', {
+            method: 'POST',
+            body: JSON.stringify({ username, password }),
+          });
+          state.token = data.token;
+          state.user = data.user;
+          sessionStorage.setItem('ota_token', data.token);
+          sessionStorage.setItem('ota_user', JSON.stringify(data.user));
+          render();
+        } catch (err) {
+          const errEl = $('#login-error');
+          errEl.style.display = 'block';
+          errEl.textContent = err.message;
+          btn.disabled = false;
+          btn.textContent = 'Sign In';
+        }
+      };
+      btn.onclick = doLogin;
+      $('#login-pass').onkeydown = (e) => { if (e.key === 'Enter') doLogin(); };
+    }
+
+    // ─── Main app ───
+    function renderApp() {
+      return `
+        <div class="app">
+          <div class="sidebar">
+            <div class="sidebar-logo">
+              <h2>GRIDx</h2>
+              <span>OTA Portal</span>
+            </div>
+            <div class="sidebar-nav">
+              <div class="sidebar-item active" data-page="firmware">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Firmware Upload
+              </div>
+              <div class="sidebar-item" data-page="push">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+                Push OTA
+              </div>
+              <div class="sidebar-item" data-page="meters">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                Meters
+              </div>
+            </div>
+            <div class="sidebar-footer">
+              <div style="margin-bottom:8px">Logged in as <strong>${state.user?.username || ''}</strong></div>
+              <span class="logout" id="logout-btn">Sign Out</span>
+            </div>
+          </div>
+          <div class="main" id="main-content">
+            <!-- Content loaded dynamically -->
+          </div>
+        </div>
+      `;
+    }
+
+    let currentPage = 'firmware';
+
+    function bindApp() {
+      $('#logout-btn').onclick = logout;
+      $$('.sidebar-item').forEach(item => {
+        item.onclick = () => {
+          $$('.sidebar-item').forEach(i => i.classList.remove('active'));
+          item.classList.add('active');
+          currentPage = item.dataset.page;
+          renderPage();
+        };
+      });
+      renderPage();
+    }
+
+    async function loadData() {
+      try {
+        const [fw, vers, meters] = await Promise.all([
+          api('/api/firmware/info').catch(() => null),
+          api('/api/firmware/versions').catch(() => ({ versions: [] })),
+          api('/api/meters').catch(() => ({ meters: [] })),
+        ]);
+        state.firmware = fw;
+        state.versions = vers.versions || [];
+        state.meters = meters.meters || [];
+        renderPage();
+      } catch {}
+    }
+
+    function renderPage() {
+      const main = $('#main-content');
+      if (!main) return;
+      switch (currentPage) {
+        case 'firmware': main.innerHTML = renderFirmwarePage(); bindFirmwarePage(); break;
+        case 'push': main.innerHTML = renderPushPage(); bindPushPage(); break;
+        case 'meters': main.innerHTML = renderMetersPage(); break;
+      }
+    }
+
+    // ─── Firmware Upload Page ───
+    function renderFirmwarePage() {
+      const fw = state.firmware;
+      return `
+        <div class="page-title">Firmware Upload</div>
+        <div class="page-subtitle">Upload firmware and auto-generate hydro hash</div>
+        <div class="divider"></div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="card-title">Current Firmware</div>
+            <button class="refresh-btn" onclick="loadData()">&#x21bb;</button>
+          </div>
+          ${fw && fw.available !== false ? `
+            <div class="info-row">
+              <div class="info-block"><label>Version</label><div class="value">v${fw.version}</div></div>
+              <div class="info-block"><label>Size</label><div class="value blue">${(fw.size/1024).toFixed(1)} KB</div></div>
+              <div class="info-block">
+                <label>Hydro Hash (Gimli)</label>
+                <div class="hash-text">${fw.hash} <button class="copy-btn" onclick="navigator.clipboard.writeText('${fw.hash}')">Copy</button></div>
+              </div>
+            </div>
+          ` : '<div style="color:#6b7280">No firmware uploaded yet</div>'}
+        </div>
+
+        <div class="card">
+          <div class="card-title">Upload New Firmware</div>
+          <div class="description">Upload a .bin file. The libhydrogen hash (Gimli-based, context "metering") will be computed server-side automatically.</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Firmware Binary</label>
+              <button class="btn btn-outline file-btn">
+                <span id="file-label">Select .bin file</span>
+                <input type="file" id="fw-file" accept=".bin">
+              </button>
+            </div>
+            <div class="form-group">
+              <label>Version</label>
+              <input type="text" id="fw-version" placeholder="e.g. 0.51.0" style="width:160px">
+            </div>
+            <button class="btn btn-primary" id="upload-btn" disabled>Upload &amp; Generate JSON</button>
+          </div>
+          <div id="upload-result"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Version History</div>
+          ${state.versions.length === 0 ? '<div style="color:#6b7280">No versions found</div>' : `
+            <table>
+              <thead><tr><th>Version</th><th>Filename</th><th>Size</th><th>Date</th></tr></thead>
+              <tbody>
+                ${state.versions.map(v => `
+                  <tr>
+                    <td><span class="chip">${v.version}</span></td>
+                    <td class="mono">${v.filename}</td>
+                    <td>${(v.size/1024).toFixed(1)} KB</td>
+                    <td>${new Date(v.date).toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `}
+        </div>
+      `;
+    }
+
+    function bindFirmwarePage() {
+      const fileInput = $('#fw-file');
+      const uploadBtn = $('#upload-btn');
+      if (!fileInput || !uploadBtn) return;
+
+      fileInput.onchange = () => {
+        const f = fileInput.files[0];
+        $('#file-label').textContent = f ? `${f.name} (${(f.size/1024).toFixed(1)} KB)` : 'Select .bin file';
+        uploadBtn.disabled = !f;
+      };
+
+      uploadBtn.onclick = async () => {
+        const file = fileInput.files[0];
+        const version = $('#fw-version').value.trim();
+        if (!file || !version) {
+          $('#upload-result').innerHTML = '<div class="alert alert-error">Please select a file and enter a version</div>';
+          return;
+        }
+        uploadBtn.disabled = true;
+        uploadBtn.innerHTML = '<span class="spinner"></span> Uploading...';
+        try {
+          const fd = new FormData();
+          fd.append('firmware', file);
+          fd.append('version', version);
+          const data = await api('/api/firmware/upload', { method: 'POST', body: fd });
+          $('#upload-result').innerHTML = `
+            <div class="alert alert-success">
+              <strong>${data.message}</strong><br>
+              <span class="mono" style="font-size:12px">Hash: ${data.firmware.hash}<br>Size: ${data.firmware.size} bytes</span>
+            </div>
+          `;
+          loadData();
+        } catch (err) {
+          $('#upload-result').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+        }
+        uploadBtn.disabled = false;
+        uploadBtn.innerHTML = 'Upload &amp; Generate JSON';
+      };
+    }
+
+    // ─── Push OTA Page ───
+    function renderPushPage() {
+      const fw = state.firmware;
+      return `
+        <div class="page-title">Push OTA</div>
+        <div class="page-subtitle">Send firmware updates to meters via MQTT</div>
+        <div class="divider"></div>
+
+        ${fw && fw.available !== false ? `
+          <div class="card">
+            <div class="card-title">Active Firmware</div>
+            <div class="info-row" style="margin-bottom:0">
+              <div class="info-block"><label>Version</label><div class="value">v${fw.version}</div></div>
+              <div class="info-block"><label>Hash</label><div class="mono">${fw.hash?.substring(0,20)}...</div></div>
+            </div>
+          </div>
+        ` : '<div class="alert alert-error" style="margin-bottom:20px">No firmware uploaded. Upload firmware first.</div>'}
+
+        <div class="card">
+          <div class="card-title">Push to All Meters</div>
+          <div class="description">Send the current firmware to every meter in the database (${state.meters.length} meter${state.meters.length !== 1 ? 's' : ''}). Each meter will begin downloading via MQTT OTA.</div>
+          <button class="btn btn-red" id="push-all-btn" ${!fw ? 'disabled' : ''}>
+            Push Firmware to All ${state.meters.length} Meters
+          </button>
+          <div id="push-all-result"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Push to Single Meter</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Select Meter</label>
+              <select id="push-drn" style="min-width:250px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                <option value="">-- Select a meter --</option>
+                ${state.meters.map(m => `<option value="${m.drn}">${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''}</option>`).join('')}
+              </select>
+            </div>
+            <button class="btn btn-blue" id="push-one-btn" ${!fw ? 'disabled' : ''}>Push OTA</button>
+          </div>
+          <div id="push-one-result"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Auto-Update Info</div>
+          <div class="description">
+            Meters automatically check for firmware updates every 3 hours via MQTT. When a new firmware is uploaded,
+            meters will detect it during their next scheduled check and start downloading automatically.
+            Use the push buttons above to trigger an immediate update without waiting.
+          </div>
+        </div>
+      `;
+    }
+
+    function bindPushPage() {
+      const pushAllBtn = $('#push-all-btn');
+      const pushOneBtn = $('#push-one-btn');
+
+      if (pushAllBtn) {
+        pushAllBtn.onclick = async () => {
+          if (!confirm(`Push firmware to ALL ${state.meters.length} meters? This will trigger OTA updates on every connected meter.`)) return;
+          pushAllBtn.disabled = true;
+          pushAllBtn.innerHTML = '<span class="spinner"></span> Pushing to all meters...';
+          try {
+            const data = await api('/api/ota/push-all', { method: 'POST', body: '{}' });
+            $('#push-all-result').innerHTML = `
+              <div class="alert alert-success">
+                <strong>${data.message}</strong><br>
+                Firmware v${data.firmware.version} sent to: ${data.meters.join(', ')}
+              </div>
+            `;
+          } catch (err) {
+            $('#push-all-result').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+          }
+          pushAllBtn.disabled = false;
+          pushAllBtn.innerHTML = `Push Firmware to All ${state.meters.length} Meters`;
+        };
+      }
+
+      if (pushOneBtn) {
+        pushOneBtn.onclick = async () => {
+          const drn = $('#push-drn').value;
+          if (!drn) { $('#push-one-result').innerHTML = '<div class="alert alert-error">Select a meter</div>'; return; }
+          pushOneBtn.disabled = true;
+          pushOneBtn.innerHTML = '<span class="spinner"></span> Pushing...';
+          try {
+            const data = await api('/api/ota/push', { method: 'POST', body: JSON.stringify({ drn }) });
+            $('#push-one-result').innerHTML = `<div class="alert alert-success">${data.message}</div>`;
+          } catch (err) {
+            $('#push-one-result').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+          }
+          pushOneBtn.disabled = false;
+          pushOneBtn.innerHTML = 'Push OTA';
+        };
+      }
+    }
+
+    // ─── Meters Page ───
+    function renderMetersPage() {
+      return `
+        <div class="page-title">Meters</div>
+        <div class="page-subtitle">All meters in the database</div>
+        <div class="divider"></div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <div class="card-title" style="margin-bottom:0">${state.meters.length} Meter${state.meters.length !== 1 ? 's' : ''} Registered</div>
+            <button class="refresh-btn" onclick="loadData()">&#x21bb;</button>
+          </div>
+          ${state.meters.length === 0 ? '<div style="color:#6b7280">No meters found in database</div>' : `
+            <table>
+              <thead><tr><th>DRN</th><th>Customer</th><th>City</th><th>Region</th><th>SIM</th></tr></thead>
+              <tbody>
+                ${state.meters.map(m => `
+                  <tr>
+                    <td class="mono">${m.drn}</td>
+                    <td>${m.customer || '-'}</td>
+                    <td>${m.city || '-'}</td>
+                    <td>${m.region || '-'}</td>
+                    <td class="mono">${m.sim || '-'}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `}
+        </div>
+      `;
+    }
+
+    // ─── Init ───
+    render();
+  </script>
+</body>
+</html>
