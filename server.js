@@ -25,7 +25,6 @@ const USERS_FILE = path.join(__dirname, 'users.json');
 
 function loadUsers() {
   if (!fs.existsSync(USERS_FILE)) {
-    // Create default admin user
     const hash = bcrypt.hashSync('GridX@OTA2026', 10);
     const users = [{ id: 1, username: 'admin', password: hash, role: 'admin' }];
     fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
@@ -34,7 +33,7 @@ function loadUsers() {
   return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
 }
 
-// ─── MySQL pool (for reading meter DRNs) ───
+// ─── MySQL pool ───
 let dbPool;
 async function getDb() {
   if (!dbPool) {
@@ -51,7 +50,40 @@ async function getDb() {
   return dbPool;
 }
 
-// ─── MQTT client ───
+// ═══════════════════════════════════════════════════════════
+// OTA Progress Tracking (in-memory)
+// ═══════════════════════════════════════════════════════════
+// { drn: { status: 'idle'|'updating'|'complete'|'error', progress: 0-100, version: '', startedAt: Date, updatedAt: Date, detail: '' } }
+const otaState = {};
+const sseClients = new Set();
+
+function setOtaStatus(drn, status, progress, detail) {
+  if (!otaState[drn]) {
+    otaState[drn] = { status: 'idle', progress: 0, version: '', startedAt: null, updatedAt: null, detail: '' };
+  }
+  otaState[drn].status = status;
+  otaState[drn].progress = progress;
+  otaState[drn].updatedAt = new Date();
+  if (detail !== undefined) otaState[drn].detail = detail;
+  if (status === 'updating' && !otaState[drn].startedAt) {
+    otaState[drn].startedAt = new Date();
+  }
+  if (status === 'complete' || status === 'error' || status === 'idle') {
+    otaState[drn].startedAt = null;
+  }
+
+  // Broadcast to all SSE clients
+  broadcastSSE({ type: 'ota_progress', drn, ...otaState[drn] });
+}
+
+function broadcastSSE(data) {
+  const msg = `data: ${JSON.stringify(data)}\n\n`;
+  for (const client of sseClients) {
+    client.write(msg);
+  }
+}
+
+// ─── MQTT client with OTA subscriptions ───
 let mqttClient;
 function getMqtt() {
   if (!mqttClient || !mqttClient.connected) {
@@ -60,10 +92,84 @@ function getMqtt() {
       username: MQTT_USER,
       password: MQTT_PASS,
     });
-    mqttClient.on('connect', () => console.log('[MQTT] Connected'));
+
+    mqttClient.on('connect', () => {
+      console.log('[MQTT] Connected');
+      // Subscribe to OTA request/status topics to track progress
+      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health'], { qos: 0 }, (err) => {
+        if (err) console.error('[MQTT] Subscribe error:', err.message);
+        else console.log('[MQTT] Subscribed to OTA progress & health topics');
+      });
+    });
+
+    mqttClient.on('message', (topic, message) => {
+      try { handleMqttMessage(topic, message); }
+      catch (err) { console.error('[MQTT] Message error:', err.message); }
+    });
+
     mqttClient.on('error', (err) => console.error('[MQTT] Error:', err.message));
   }
   return mqttClient;
+}
+
+function handleMqttMessage(topic, buf) {
+  const parts = topic.split('/');
+  if (parts.length < 3 || parts[0] !== 'gx') return;
+  const drn = parts[1];
+  const type = parts[2];
+
+  // Handle OTA request messages: gx/{drn}/ota/req
+  if (type === 'ota' && parts[3] === 'req') {
+    let msg;
+    try { msg = JSON.parse(buf.toString()); } catch { return; }
+
+    if (msg.action === 'chunk') {
+      const offset = msg.offset || 0;
+      const chunkSize = msg.size || 1024;
+      // Get firmware size to calculate progress
+      const fwInfo = getFirmwareInfo();
+      if (fwInfo) {
+        const progress = Math.min(100, Math.round(((offset + chunkSize) / fwInfo.size) * 100));
+        setOtaStatus(drn, 'updating', progress, `Downloading: ${offset + chunkSize} / ${fwInfo.size} bytes`);
+      }
+    } else if (msg.action === 'complete') {
+      const fwInfo = getFirmwareInfo();
+      setOtaStatus(drn, 'complete', 100, `Updated to v${fwInfo ? fwInfo.version : '?'}`);
+      console.log(`[OTA] ${drn}: Update complete`);
+    } else if (msg.action === 'error') {
+      setOtaStatus(drn, 'error', 0, msg.detail || 'Update failed');
+      console.error(`[OTA] ${drn}: Error - ${msg.detail || 'unknown'}`);
+    } else if (msg.action === 'check') {
+      // Meter is checking for updates - not an active download
+      console.log(`[OTA] ${drn}: Check request`);
+    }
+  }
+
+  // Handle health reports: gx/{drn}/health
+  if (type === 'health') {
+    try {
+      const data = JSON.parse(buf.toString());
+      if (data.firmware) {
+        // Store latest firmware version for this meter
+        meterFirmwareVersions[drn] = {
+          version: data.firmware,
+          lastSeen: new Date(),
+          uptime: data.uptime || 0,
+        };
+        broadcastSSE({ type: 'meter_firmware', drn, version: data.firmware });
+      }
+    } catch {}
+  }
+}
+
+// In-memory cache of meter firmware versions from health reports
+const meterFirmwareVersions = {};
+
+function getFirmwareInfo() {
+  const infoPath = path.join(FIRMWARE_DIR, 'fw_latest.json');
+  try {
+    return JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+  } catch { return null; }
 }
 
 // ─── Multer for firmware upload ───
@@ -109,6 +215,27 @@ app.post('/api/login', (req, res) => {
   }
   const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '24h' });
   res.json({ token, user: { username: user.username, role: user.role } });
+});
+
+// ─── SSE endpoint for real-time OTA progress ───
+app.get('/api/ota/events', auth, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  // Send current state immediately
+  res.write(`data: ${JSON.stringify({ type: 'init', otaState, meterFirmwareVersions })}\n\n`);
+
+  sseClients.add(res);
+  req.on('close', () => sseClients.delete(res));
+});
+
+// ─── OTA status for all meters ───
+app.get('/api/ota/status', auth, (req, res) => {
+  res.json({ otaState, meterFirmwareVersions });
 });
 
 // ─── Firmware info ───
@@ -162,6 +289,14 @@ app.post('/api/firmware/upload', auth, upload.single('firmware'), (req, res) => 
     fs.writeFileSync(path.join(FIRMWARE_DIR, 'fw_latest.json'), JSON.stringify(info, null, 2));
     const backup = `firmware_${version.replace(/\./g, '_')}.bin`;
     fs.copyFileSync(fwPath, path.join(FIRMWARE_DIR, backup));
+
+    // Reset all OTA states when new firmware is uploaded
+    for (const drn in otaState) {
+      otaState[drn].status = 'idle';
+      otaState[drn].progress = 0;
+      otaState[drn].detail = '';
+    }
+
     console.log(`[OTA] Uploaded v${version} (${fwData.length} bytes) hash=${hash}`);
     res.json({ success: true, message: `Firmware v${version} uploaded`, firmware: info });
   } catch (err) {
@@ -169,16 +304,37 @@ app.post('/api/firmware/upload', auth, upload.single('firmware'), (req, res) => 
   }
 });
 
-// ─── List meters ───
+// ─── List meters (with firmware version from health reports) ───
 app.get('/api/meters', auth, async (req, res) => {
   try {
     const db = await getDb();
+    // Get meters with their last reported firmware version from MeterHealthReport
     const [rows] = await db.query(
-      `SELECT DRN as drn, CONCAT(Name, ' ', Surname) as customer, City as city,
-              Region as region, SIMNumber as sim
-       FROM MeterProfileReal ORDER BY DRN`
+      `SELECT m.DRN as drn, CONCAT(m.Name, ' ', m.Surname) as customer,
+              m.City as city, m.Region as region, m.SIMNumber as sim,
+              h.firmware as firmware_version, h.created_at as last_health_report
+       FROM MeterProfileReal m
+       LEFT JOIN (
+         SELECT DRN, firmware, created_at,
+                ROW_NUMBER() OVER (PARTITION BY DRN ORDER BY created_at DESC) as rn
+         FROM MeterHealthReport
+         WHERE firmware IS NOT NULL AND firmware != ''
+       ) h ON m.DRN = h.DRN AND h.rn = 1
+       ORDER BY m.DRN`
     );
-    res.json({ meters: rows });
+
+    // Merge with in-memory firmware versions (more recent than DB)
+    const meters = rows.map(m => {
+      const memVersion = meterFirmwareVersions[m.drn];
+      if (memVersion && (!m.last_health_report || memVersion.lastSeen > new Date(m.last_health_report))) {
+        m.firmware_version = memVersion.version;
+      }
+      // Add OTA status
+      m.ota_status = otaState[m.drn] || { status: 'idle', progress: 0, detail: '' };
+      return m;
+    });
+
+    res.json({ meters });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -202,6 +358,12 @@ app.post('/api/ota/push', auth, (req, res) => {
       chunk_size: 1024,
     };
     client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+
+    // Set initial OTA state
+    setOtaStatus(drn, 'updating', 0, `Pushed v${info.version} - waiting for meter response`);
+    if (!otaState[drn]) otaState[drn] = {};
+    otaState[drn].version = info.version;
+
     console.log(`[OTA] Pushed v${info.version} to ${drn}`);
     res.json({ success: true, message: `OTA pushed to ${drn}`, command: cmd });
   } catch (err) {
@@ -232,6 +394,9 @@ app.post('/api/ota/push-all', auth, async (req, res) => {
     const results = [];
     for (const row of rows) {
       client.publish(`gx/${row.drn}/cmd`, cmdStr, { qos: 1 });
+      setOtaStatus(row.drn, 'updating', 0, `Pushed v${info.version} - waiting for meter response`);
+      if (!otaState[row.drn]) otaState[row.drn] = {};
+      otaState[row.drn].version = info.version;
       results.push(row.drn);
       pushed++;
     }
@@ -261,5 +426,5 @@ app.get('*', (req, res) => {
 // ═══════════════════════════════════════════════════════════
 app.listen(PORT, () => {
   console.log(`[OTA Portal] Running on port ${PORT}`);
-  getMqtt(); // Connect MQTT eagerly
+  getMqtt();
 });

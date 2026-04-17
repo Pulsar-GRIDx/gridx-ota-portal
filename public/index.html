@@ -144,11 +144,57 @@
       font-weight: 600; background: rgba(34,197,94,0.15); color: #4ade80;
     }
     .chip.blue { background: rgba(59,130,246,0.15); color: #60a5fa; }
+    .chip.orange { background: rgba(251,146,60,0.15); color: #fb923c; }
+    .chip.red { background: rgba(239,68,68,0.15); color: #f87171; }
+    .chip.gray { background: rgba(156,163,175,0.15); color: #9ca3af; }
     .mono { font-family: monospace; font-size: 12px; color: #9ca3af; }
 
-    /* Meter checkboxes */
-    .meter-select { display: flex; align-items: center; gap: 8px; padding: 8px 0; }
-    .meter-select input[type="checkbox"] { accent-color: #4ade80; width: 16px; height: 16px; }
+    /* Progress bar */
+    .progress-container {
+      width: 100%; background: #0f1420; border-radius: 6px; height: 8px; overflow: hidden;
+      margin-top: 4px;
+    }
+    .progress-bar {
+      height: 100%; border-radius: 6px; transition: width 0.3s ease;
+      background: linear-gradient(90deg, #3b82f6, #60a5fa);
+    }
+    .progress-bar.complete {
+      background: linear-gradient(90deg, #22c55e, #4ade80);
+    }
+    .progress-bar.error {
+      background: linear-gradient(90deg, #dc2626, #ef4444);
+    }
+    .progress-text {
+      font-size: 11px; color: #6b7280; margin-top: 2px;
+    }
+
+    /* OTA meter card */
+    .ota-meter-card {
+      background: #0f1420; border: 1px solid rgba(255,255,255,0.04);
+      border-radius: 10px; padding: 16px; margin-bottom: 10px;
+      display: flex; align-items: center; gap: 16px;
+    }
+    .ota-meter-drn {
+      font-family: monospace; font-size: 14px; font-weight: 600; color: #e0e0e0;
+      min-width: 140px;
+    }
+    .ota-meter-info { flex: 1; }
+    .ota-meter-status { min-width: 100px; text-align: right; }
+
+    /* Status dot */
+    .status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px;
+    }
+    .status-dot.green { background: #4ade80; box-shadow: 0 0 6px rgba(74,222,128,0.4); }
+    .status-dot.blue { background: #60a5fa; box-shadow: 0 0 6px rgba(96,165,250,0.4); animation: pulse 1.5s infinite; }
+    .status-dot.red { background: #f87171; }
+    .status-dot.gray { background: #6b7280; }
+    .status-dot.orange { background: #fb923c; animation: pulse 1.5s infinite; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
 
     /* Loading spinner */
     .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.2); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; }
@@ -164,9 +210,6 @@
   <div id="app"></div>
 
   <script>
-    // ═══════════════════════════════════════════════════════════
-    // GRIDx OTA Portal - Single Page Application
-    // ═══════════════════════════════════════════════════════════
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => document.querySelectorAll(sel);
 
@@ -176,8 +219,11 @@
       firmware: null,
       versions: [],
       meters: [],
-      loading: {},
+      otaState: {},
+      meterFirmwareVersions: {},
     };
+
+    let eventSource = null;
 
     // ─── API helpers ───
     async function api(url, options = {}) {
@@ -197,19 +243,75 @@
       sessionStorage.removeItem('ota_user');
       state.token = null;
       state.user = null;
+      if (eventSource) { eventSource.close(); eventSource = null; }
       render();
+    }
+
+    // ─── SSE for real-time OTA updates ───
+    function connectSSE() {
+      if (eventSource) eventSource.close();
+      eventSource = new EventSource(`/api/ota/events?token=${state.token}`);
+
+      // Auth via query param won't work with our middleware, so use a polling fallback
+      // Actually, the SSE endpoint uses auth middleware which reads Authorization header.
+      // EventSource doesn't support headers, so we'll use fetch-based SSE or polling.
+      eventSource.close();
+      eventSource = null;
+      startPolling();
+    }
+
+    let pollInterval = null;
+    function startPolling() {
+      if (pollInterval) return;
+      pollInterval = setInterval(async () => {
+        try {
+          const data = await api('/api/ota/status');
+          let changed = false;
+
+          // Update OTA state
+          for (const drn in data.otaState) {
+            const prev = state.otaState[drn];
+            const curr = data.otaState[drn];
+            if (!prev || prev.status !== curr.status || prev.progress !== curr.progress) {
+              changed = true;
+            }
+            state.otaState[drn] = curr;
+          }
+
+          // Update firmware versions
+          for (const drn in data.meterFirmwareVersions) {
+            state.meterFirmwareVersions[drn] = data.meterFirmwareVersions[drn];
+          }
+
+          if (changed) {
+            // Update meters' ota_status
+            state.meters.forEach(m => {
+              if (state.otaState[m.drn]) {
+                m.ota_status = state.otaState[m.drn];
+              }
+            });
+            renderPage();
+          }
+        } catch {}
+      }, 2000);
+    }
+
+    function stopPolling() {
+      if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
     }
 
     // ─── Render ───
     function render() {
       const app = $('#app');
       if (!state.token) {
+        stopPolling();
         app.innerHTML = renderLogin();
         bindLogin();
       } else {
         app.innerHTML = renderApp();
         bindApp();
         loadData();
+        startPolling();
       }
     }
 
@@ -289,9 +391,7 @@
               <span class="logout" id="logout-btn">Sign Out</span>
             </div>
           </div>
-          <div class="main" id="main-content">
-            <!-- Content loaded dynamically -->
-          </div>
+          <div class="main" id="main-content"></div>
         </div>
       `;
     }
@@ -313,14 +413,17 @@
 
     async function loadData() {
       try {
-        const [fw, vers, meters] = await Promise.all([
+        const [fw, vers, meters, otaStatus] = await Promise.all([
           api('/api/firmware/info').catch(() => null),
           api('/api/firmware/versions').catch(() => ({ versions: [] })),
           api('/api/meters').catch(() => ({ meters: [] })),
+          api('/api/ota/status').catch(() => ({ otaState: {}, meterFirmwareVersions: {} })),
         ]);
         state.firmware = fw;
         state.versions = vers.versions || [];
         state.meters = meters.meters || [];
+        state.otaState = otaStatus.otaState || {};
+        state.meterFirmwareVersions = otaStatus.meterFirmwareVersions || {};
         renderPage();
       } catch {}
     }
@@ -333,6 +436,31 @@
         case 'push': main.innerHTML = renderPushPage(); bindPushPage(); break;
         case 'meters': main.innerHTML = renderMetersPage(); break;
       }
+    }
+
+    // ─── Helper: get firmware status for a meter ───
+    function getMeterFwStatus(meter) {
+      const latestFw = state.firmware;
+      const meterFw = meter.firmware_version || state.meterFirmwareVersions[meter.drn]?.version || null;
+      const otaStatus = meter.ota_status || state.otaState[meter.drn] || { status: 'idle', progress: 0 };
+
+      if (otaStatus.status === 'updating') {
+        return { label: 'Updating', chipClass: 'orange', dotClass: 'orange', progress: otaStatus.progress, detail: otaStatus.detail };
+      }
+      if (otaStatus.status === 'complete') {
+        return { label: 'Updated', chipClass: '', dotClass: 'green', progress: 100, detail: otaStatus.detail };
+      }
+      if (otaStatus.status === 'error') {
+        return { label: 'Error', chipClass: 'red', dotClass: 'red', progress: 0, detail: otaStatus.detail };
+      }
+
+      if (!meterFw) {
+        return { label: 'Unknown', chipClass: 'gray', dotClass: 'gray', progress: null, detail: 'No health report received' };
+      }
+      if (latestFw && meterFw === latestFw.version) {
+        return { label: 'Up to date', chipClass: '', dotClass: 'green', progress: null, detail: '' };
+      }
+      return { label: 'Outdated', chipClass: 'orange', dotClass: 'orange', progress: null, detail: `Running v${meterFw}` };
     }
 
     // ─── Firmware Upload Page ───
@@ -444,6 +572,8 @@
     // ─── Push OTA Page ───
     function renderPushPage() {
       const fw = state.firmware;
+      const hasActiveOta = Object.values(state.otaState).some(s => s.status === 'updating');
+
       return `
         <div class="page-title">Push OTA</div>
         <div class="page-subtitle">Send firmware updates to meters via MQTT</div>
@@ -475,12 +605,56 @@
               <label>Select Meter</label>
               <select id="push-drn" style="min-width:250px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
                 <option value="">-- Select a meter --</option>
-                ${state.meters.map(m => `<option value="${m.drn}">${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''}</option>`).join('')}
+                ${state.meters.map(m => {
+                  const st = getMeterFwStatus(m);
+                  return `<option value="${m.drn}">${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''} - ${st.label}</option>`;
+                }).join('')}
               </select>
             </div>
             <button class="btn btn-blue" id="push-one-btn" ${!fw ? 'disabled' : ''}>Push OTA</button>
           </div>
           <div id="push-one-result"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="card-title" style="margin-bottom:0">Meter Update Status</div>
+            <button class="refresh-btn" onclick="loadData()">&#x21bb;</button>
+          </div>
+          <div class="description" style="margin-top:12px">Real-time progress of firmware updates across all meters. Updates every 2 seconds.</div>
+          <div id="meter-status-list">
+            ${state.meters.length === 0 ? '<div style="color:#6b7280">No meters found</div>' :
+              state.meters.map(m => {
+                const st = getMeterFwStatus(m);
+                const meterFw = m.firmware_version || state.meterFirmwareVersions[m.drn]?.version || '-';
+                return `
+                  <div class="ota-meter-card">
+                    <div class="ota-meter-drn">
+                      <span class="status-dot ${st.dotClass}"></span>
+                      ${m.drn}
+                    </div>
+                    <div class="ota-meter-info">
+                      <div style="font-size:12px;color:#9ca3af;margin-bottom:2px">
+                        Firmware: <strong style="color:#e0e0e0">${meterFw}</strong>
+                        ${m.customer ? ' | ' + m.customer.trim() : ''}
+                      </div>
+                      ${st.progress !== null ? `
+                        <div class="progress-container">
+                          <div class="progress-bar ${st.progress >= 100 ? 'complete' : ''} ${st.chipClass === 'red' ? 'error' : ''}" style="width:${st.progress}%"></div>
+                        </div>
+                        <div class="progress-text">${st.detail || ''} ${st.progress > 0 ? '(' + st.progress + '%)' : ''}</div>
+                      ` : `
+                        <div class="progress-text">${st.detail || ''}</div>
+                      `}
+                    </div>
+                    <div class="ota-meter-status">
+                      <span class="chip ${st.chipClass}">${st.label}</span>
+                    </div>
+                  </div>
+                `;
+              }).join('')
+            }
+          </div>
         </div>
 
         <div class="card">
@@ -511,6 +685,8 @@
                 Firmware v${data.firmware.version} sent to: ${data.meters.join(', ')}
               </div>
             `;
+            // Refresh to show progress
+            loadData();
           } catch (err) {
             $('#push-all-result').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
           }
@@ -528,6 +704,7 @@
           try {
             const data = await api('/api/ota/push', { method: 'POST', body: JSON.stringify({ drn }) });
             $('#push-one-result').innerHTML = `<div class="alert alert-success">${data.message}</div>`;
+            loadData();
           } catch (err) {
             $('#push-one-result').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
           }
@@ -539,10 +716,39 @@
 
     // ─── Meters Page ───
     function renderMetersPage() {
+      const latestVersion = state.firmware?.version || '-';
+      const updatedCount = state.meters.filter(m => {
+        const mFw = m.firmware_version || state.meterFirmwareVersions[m.drn]?.version;
+        return mFw && mFw === latestVersion;
+      }).length;
+      const updatingCount = state.meters.filter(m => {
+        const ota = m.ota_status || state.otaState[m.drn];
+        return ota && ota.status === 'updating';
+      }).length;
+
       return `
         <div class="page-title">Meters</div>
-        <div class="page-subtitle">All meters in the database</div>
+        <div class="page-subtitle">All meters in the database with firmware status</div>
         <div class="divider"></div>
+
+        <div style="display:flex;gap:16px;margin-bottom:20px;flex-wrap:wrap">
+          <div class="card" style="flex:1;min-width:160px;margin-bottom:0">
+            <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Total Meters</div>
+            <div style="font-size:28px;font-weight:700;color:#f3f4f6">${state.meters.length}</div>
+          </div>
+          <div class="card" style="flex:1;min-width:160px;margin-bottom:0">
+            <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Up to Date (v${latestVersion})</div>
+            <div style="font-size:28px;font-weight:700;color:#4ade80">${updatedCount}</div>
+          </div>
+          <div class="card" style="flex:1;min-width:160px;margin-bottom:0">
+            <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Currently Updating</div>
+            <div style="font-size:28px;font-weight:700;color:#60a5fa">${updatingCount}</div>
+          </div>
+          <div class="card" style="flex:1;min-width:160px;margin-bottom:0">
+            <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Outdated / Unknown</div>
+            <div style="font-size:28px;font-weight:700;color:#fb923c">${state.meters.length - updatedCount - updatingCount}</div>
+          </div>
+        </div>
 
         <div class="card">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -551,17 +757,37 @@
           </div>
           ${state.meters.length === 0 ? '<div style="color:#6b7280">No meters found in database</div>' : `
             <table>
-              <thead><tr><th>DRN</th><th>Customer</th><th>City</th><th>Region</th><th>SIM</th></tr></thead>
+              <thead><tr><th>DRN</th><th>Customer</th><th>City</th><th>Region</th><th>Firmware</th><th>Status</th><th>Progress</th></tr></thead>
               <tbody>
-                ${state.meters.map(m => `
-                  <tr>
-                    <td class="mono">${m.drn}</td>
-                    <td>${m.customer || '-'}</td>
-                    <td>${m.city || '-'}</td>
-                    <td>${m.region || '-'}</td>
-                    <td class="mono">${m.sim || '-'}</td>
-                  </tr>
-                `).join('')}
+                ${state.meters.map(m => {
+                  const st = getMeterFwStatus(m);
+                  const meterFw = m.firmware_version || state.meterFirmwareVersions[m.drn]?.version || '-';
+                  return `
+                    <tr>
+                      <td class="mono">${m.drn}</td>
+                      <td>${m.customer || '-'}</td>
+                      <td>${m.city || '-'}</td>
+                      <td>${m.region || '-'}</td>
+                      <td>
+                        <span class="chip ${meterFw === (state.firmware?.version || '') ? '' : (meterFw === '-' ? 'gray' : 'orange')}">
+                          ${meterFw === '-' ? 'Unknown' : 'v' + meterFw}
+                        </span>
+                      </td>
+                      <td>
+                        <span class="status-dot ${st.dotClass}"></span>
+                        ${st.label}
+                      </td>
+                      <td style="min-width:150px">
+                        ${st.progress !== null ? `
+                          <div class="progress-container">
+                            <div class="progress-bar ${st.progress >= 100 ? 'complete' : ''} ${st.chipClass === 'red' ? 'error' : ''}" style="width:${st.progress}%"></div>
+                          </div>
+                          <div class="progress-text">${st.progress}%</div>
+                        ` : '-'}
+                      </td>
+                    </tr>
+                  `;
+                }).join('')}
               </tbody>
             </table>
           `}
