@@ -448,19 +448,27 @@
         return { label: 'Updating', chipClass: 'orange', dotClass: 'orange', progress: otaStatus.progress, detail: otaStatus.detail };
       }
       if (otaStatus.status === 'complete') {
-        return { label: 'Updated', chipClass: '', dotClass: 'green', progress: 100, detail: otaStatus.detail };
+        return { label: 'Up to date', chipClass: '', dotClass: 'green', progress: 100, detail: otaStatus.detail };
       }
       if (otaStatus.status === 'error') {
         return { label: 'Error', chipClass: 'red', dotClass: 'red', progress: 0, detail: otaStatus.detail };
       }
 
       if (!meterFw) {
-        return { label: 'Unknown', chipClass: 'gray', dotClass: 'gray', progress: null, detail: 'No health report received' };
+        return { label: 'Not updated', chipClass: 'gray', dotClass: 'gray', progress: null, detail: 'No update recorded' };
       }
       if (latestFw && meterFw === latestFw.version) {
         return { label: 'Up to date', chipClass: '', dotClass: 'green', progress: null, detail: '' };
       }
       return { label: 'Outdated', chipClass: 'orange', dotClass: 'orange', progress: null, detail: `Running v${meterFw}` };
+    }
+
+    function formatDate(d) {
+      if (!d) return '-';
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return '-';
+      return dt.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+        + ' ' + dt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
     }
 
     // ─── Firmware Upload Page ───
@@ -717,14 +725,18 @@
     // ─── Meters Page ───
     function renderMetersPage() {
       const latestVersion = state.firmware?.version || '-';
-      const updatedCount = state.meters.filter(m => {
-        const mFw = m.firmware_version || state.meterFirmwareVersions[m.drn]?.version;
-        return mFw && mFw === latestVersion;
-      }).length;
-      const updatingCount = state.meters.filter(m => {
-        const ota = m.ota_status || state.otaState[m.drn];
-        return ota && ota.status === 'updating';
-      }).length;
+
+      // Count meters by status using the same logic as getMeterFwStatus
+      let updatedCount = 0;
+      let updatingCount = 0;
+      let errorCount = 0;
+      state.meters.forEach(m => {
+        const st = getMeterFwStatus(m);
+        if (st.label === 'Up to date') updatedCount++;
+        else if (st.label === 'Updating') updatingCount++;
+        else if (st.label === 'Error') errorCount++;
+      });
+      const outdatedCount = state.meters.length - updatedCount - updatingCount - errorCount;
 
       return `
         <div class="page-title">Meters</div>
@@ -745,8 +757,8 @@
             <div style="font-size:28px;font-weight:700;color:#60a5fa">${updatingCount}</div>
           </div>
           <div class="card" style="flex:1;min-width:160px;margin-bottom:0">
-            <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Outdated / Unknown</div>
-            <div style="font-size:28px;font-weight:700;color:#fb923c">${state.meters.length - updatedCount - updatingCount}</div>
+            <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px">Outdated / Not Updated</div>
+            <div style="font-size:28px;font-weight:700;color:#fb923c">${outdatedCount}</div>
           </div>
         </div>
 
@@ -757,33 +769,36 @@
           </div>
           ${state.meters.length === 0 ? '<div style="color:#6b7280">No meters found in database</div>' : `
             <table>
-              <thead><tr><th>DRN</th><th>Customer</th><th>City</th><th>Region</th><th>Firmware</th><th>Status</th><th>Progress</th></tr></thead>
+              <thead><tr><th>DRN</th><th>Customer</th><th>City</th><th>Firmware</th><th>Status</th><th>Progress</th><th>Last Updated</th></tr></thead>
               <tbody>
                 ${state.meters.map(m => {
                   const st = getMeterFwStatus(m);
                   const meterFw = m.firmware_version || state.meterFirmwareVersions[m.drn]?.version || '-';
+                  const lastUpdated = m.completed_at;
                   return `
                     <tr>
                       <td class="mono">${m.drn}</td>
                       <td>${m.customer || '-'}</td>
                       <td>${m.city || '-'}</td>
-                      <td>${m.region || '-'}</td>
                       <td>
                         <span class="chip ${meterFw === (state.firmware?.version || '') ? '' : (meterFw === '-' ? 'gray' : 'orange')}">
-                          ${meterFw === '-' ? 'Unknown' : 'v' + meterFw}
+                          ${meterFw === '-' ? 'Not updated' : 'v' + meterFw}
                         </span>
                       </td>
                       <td>
                         <span class="status-dot ${st.dotClass}"></span>
                         ${st.label}
                       </td>
-                      <td style="min-width:150px">
+                      <td style="min-width:140px">
                         ${st.progress !== null ? `
                           <div class="progress-container">
                             <div class="progress-bar ${st.progress >= 100 ? 'complete' : ''} ${st.chipClass === 'red' ? 'error' : ''}" style="width:${st.progress}%"></div>
                           </div>
                           <div class="progress-text">${st.progress}%</div>
                         ` : '-'}
+                      </td>
+                      <td style="font-size:12px;color:#9ca3af;min-width:140px">
+                        ${formatDate(lastUpdated)}
                       </td>
                     </tr>
                   `;
