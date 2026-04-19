@@ -513,6 +513,7 @@
             <div class="info-row">
               <div class="info-block"><label>Version</label><div class="value">v${fw.version}</div></div>
               <div class="info-block"><label>Size</label><div class="value blue">${(fw.size/1024).toFixed(1)} KB</div></div>
+              <div class="info-block"><label>GRIDx Signature</label><div class="value" style="font-size:14px">${fw.mfr ? '<span style="color:#4ade80">Verified (MFR ' + fw.mfr + ')</span>' : '<span style="color:#fb923c">Not verified</span>'}</div></div>
               <div class="info-block">
                 <label>Hydro Hash (Gimli)</label>
                 <div class="hash-text">${fw.hash} <button class="copy-btn" onclick="navigator.clipboard.writeText('${fw.hash}')">Copy</button></div>
@@ -790,8 +791,8 @@
             <div class="form-group">
               <label>TFT Binary</label>
               <button class="btn btn-outline file-btn">
-                <span id="tft-file-label">Select .tft file</span>
-                <input type="file" id="tft-file" accept=".tft">
+                <span id="tft-file-label">Select .tft or .HMI file</span>
+                <input type="file" id="tft-file" accept=".tft,.hmi,.HMI">
               </button>
             </div>
             <div class="form-group">
@@ -897,7 +898,7 @@
       if (fileInput && uploadBtn) {
         fileInput.onchange = () => {
           const f = fileInput.files[0];
-          $('#tft-file-label').textContent = f ? f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)' : 'Select .tft file';
+          $('#tft-file-label').textContent = f ? f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)' : 'Select .tft or .HMI file';
           uploadBtn.disabled = !f;
         };
 

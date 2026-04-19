@@ -336,6 +336,52 @@ function loadNextionTft(tftPath) {
   }
 }
 
+// ─── GRIDx Firmware Signature Verification ───
+const GRIDX_SIG_MARKER = 'GRIDX_FW_SIG:';
+const GRIDX_MFR_CODE = 260;
+
+function verifyGRIDxSignature(fwData) {
+  // Scan the binary for the GRIDx signature marker
+  const sigStr = GRIDX_SIG_MARKER;
+  const sigBuf = Buffer.from(sigStr, 'ascii');
+
+  let sigOffset = -1;
+  for (let i = 0; i < fwData.length - sigBuf.length; i++) {
+    if (fwData.compare(sigBuf, 0, sigBuf.length, i, i + sigBuf.length) === 0) {
+      sigOffset = i;
+      break;
+    }
+  }
+
+  if (sigOffset === -1) {
+    return { valid: false, error: 'No GRIDx firmware signature found in binary' };
+  }
+
+  // Extract the full signature string (until null byte or max 128 chars)
+  let endOffset = sigOffset;
+  while (endOffset < fwData.length && fwData[endOffset] !== 0 && (endOffset - sigOffset) < 128) {
+    endOffset++;
+  }
+  const sigString = fwData.toString('ascii', sigOffset, endOffset);
+
+  // Parse: "GRIDX_FW_SIG:MFR=260:VER=0.60.6"
+  const mfrMatch = sigString.match(/MFR=(\d+)/);
+  const verMatch = sigString.match(/VER=([\d.]+)/);
+
+  if (!mfrMatch) {
+    return { valid: false, error: 'GRIDx signature found but missing manufacturer code' };
+  }
+
+  const mfrCode = parseInt(mfrMatch[1]);
+  if (mfrCode !== GRIDX_MFR_CODE) {
+    return { valid: false, error: `Invalid manufacturer code: ${mfrCode} (expected ${GRIDX_MFR_CODE})` };
+  }
+
+  const embeddedVersion = verMatch ? verMatch[1] : 'unknown';
+  console.log(`[OTA] GRIDx signature verified: MFR=${mfrCode}, VER=${embeddedVersion}`);
+  return { valid: true, mfr: mfrCode, version: embeddedVersion };
+}
+
 // ─── Multer for firmware upload ───
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, FIRMWARE_DIR),
@@ -357,10 +403,11 @@ const tftStorage = multer.diskStorage({
 });
 const tftUpload = multer({
   storage: tftStorage,
-  limits: { fileSize: 8 * 1024 * 1024 },
+  limits: { fileSize: 16 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.originalname.endsWith('.tft')) cb(null, true);
-    else cb(new Error('Only .tft files accepted'));
+    const name = file.originalname.toLowerCase();
+    if (name.endsWith('.tft') || name.endsWith('.hmi')) cb(null, true);
+    else cb(new Error('Only .tft and .HMI files accepted'));
   },
 });
 
@@ -448,15 +495,27 @@ app.post('/api/firmware/upload', auth, upload.single('firmware'), async (req, re
   try {
     const fwPath = path.join(FIRMWARE_DIR, 'firmware.bin');
     const fwData = fs.readFileSync(fwPath);
+
+    // Verify GRIDx firmware signature
+    const sigCheck = verifyGRIDxSignature(fwData);
+    if (!sigCheck.valid) {
+      // Delete the rejected file
+      fs.unlinkSync(fwPath);
+      console.error(`[OTA] Firmware REJECTED: ${sigCheck.error}`);
+      return res.status(400).json({ error: `Firmware rejected: ${sigCheck.error}` });
+    }
+
     const hash = hydroHashHex(fwData, 'metering');
     const info = {
-      version,
+      version: version || sigCheck.version,
       url: 'https://tech.gridx-meters.com/files/firmware.bin',
       size: fwData.length,
       hash,
+      mfr: sigCheck.mfr,
+      embedded_version: sigCheck.version,
     };
     fs.writeFileSync(path.join(FIRMWARE_DIR, 'fw_latest.json'), JSON.stringify(info, null, 2));
-    const backup = `firmware_${version.replace(/\./g, '_')}.bin`;
+    const backup = `firmware_${(version || sigCheck.version).replace(/\./g, '_')}.bin`;
     fs.copyFileSync(fwPath, path.join(FIRMWARE_DIR, backup));
 
     // Reset in-memory OTA states (but keep DB records for history)
@@ -467,8 +526,8 @@ app.post('/api/firmware/upload', auth, upload.single('firmware'), async (req, re
       otaState[drn].detail = '';
     }
 
-    console.log(`[OTA] Uploaded v${version} (${fwData.length} bytes) hash=${hash}`);
-    res.json({ success: true, message: `Firmware v${version} uploaded`, firmware: info });
+    console.log(`[OTA] Uploaded v${version} (${fwData.length} bytes) hash=${hash} MFR=${sigCheck.mfr}`);
+    res.json({ success: true, message: `Firmware v${version} uploaded (GRIDx verified)`, firmware: info });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -745,6 +804,19 @@ app.post('/api/ota/push-all', auth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Multer error handler — return JSON errors instead of HTML
+// ═══════════════════════════════════════════════════════════
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: `Upload error: ${err.message}` });
+  }
+  if (err && err.message) {
+    return res.status(400).json({ error: err.message });
+  }
+  next(err);
 });
 
 // ═══════════════════════════════════════════════════════════
