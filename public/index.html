@@ -543,6 +543,42 @@
         </div>
 
         <div class="card">
+          <div class="card-title">Download Firmware</div>
+          <div class="description">Download the current firmware binary or source code for the ESP32.</div>
+          ${fw && fw.available !== false ? `
+            <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
+              <div style="flex:1;min-width:200px;background:#0f1420;border:1px solid rgba(255,255,255,0.04);border-radius:10px;padding:16px">
+                <div style="font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px">Current Binary</div>
+                <div style="font-size:16px;font-weight:600;color:#4ade80;margin-bottom:2px">GRIDx_firmware_v${fw.version}.bin</div>
+                <div style="font-size:12px;color:#9ca3af">${(fw.size/1024).toFixed(1)} KB | MFR ${fw.mfr || 260} | ${fw.embedded_version ? 'Signed v' + fw.embedded_version : 'Unsigned'}</div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-primary" id="download-fw-btn" style="min-width:200px">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  Download .bin (v${fw.version})
+                </button>
+                <a href="https://github.com/kamati/gridx-esp32-mqtt/tree/feature/pubsubclient-mqtt" target="_blank" class="btn btn-outline" style="min-width:200px;text-decoration:none;text-align:center">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0020 4.77 5.07 5.07 0 0019.91 1S18.73.65 16 2.48a13.38 13.38 0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 005 4.77a5.44 5.44 0 00-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 009 18.13V22"/></svg>
+                  View Source Code on GitHub
+                </a>
+              </div>
+            </div>
+          ` : '<div style="color:#6b7280;margin-bottom:16px">No firmware uploaded yet. Upload a firmware binary first to enable downloads.</div>'}
+          ${state.versions.length > 0 ? `
+            <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:16px">
+              <div style="font-size:13px;font-weight:600;color:#9ca3af;margin-bottom:8px">Previous Versions</div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                ${state.versions.map(v => `
+                  <button class="btn btn-outline download-ver-btn" data-version="${v.version}" style="font-size:12px;padding:6px 14px">
+                    v${v.version} (${(v.size/1024).toFixed(1)} KB)
+                  </button>
+                `).join('')}
+              </div>
+            </div>
+          ` : ''}
+        </div>
+
+        <div class="card">
           <div class="card-title">Version History</div>
           ${state.versions.length === 0 ? '<div style="color:#6b7280">No versions found</div>' : `
             <table>
@@ -573,6 +609,32 @@
         $('#file-label').textContent = f ? `${f.name} (${(f.size/1024).toFixed(1)} KB)` : 'Select .bin file';
         uploadBtn.disabled = !f;
       };
+
+      // Download current firmware
+      const dlBtn = $('#download-fw-btn');
+      if (dlBtn) {
+        dlBtn.onclick = () => {
+          const a = document.createElement('a');
+          a.href = '/api/firmware/download';
+          a.setAttribute('download', '');
+          // Add auth via fetch + blob
+          fetch('/api/firmware/download', { headers: { 'Authorization': 'Bearer ' + state.token } })
+            .then(r => { if (!r.ok) throw new Error('Download failed'); return r.blob(); })
+            .then(blob => { const url = URL.createObjectURL(blob); a.href = url; a.click(); URL.revokeObjectURL(url); })
+            .catch(err => alert(err.message));
+        };
+      }
+
+      // Download specific version
+      $$('.download-ver-btn').forEach(btn => {
+        btn.onclick = () => {
+          const ver = btn.dataset.version;
+          fetch('/api/firmware/download/' + ver, { headers: { 'Authorization': 'Bearer ' + state.token } })
+            .then(r => { if (!r.ok) throw new Error('Version not found'); return r.blob(); })
+            .then(blob => { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'GRIDx_firmware_v' + ver + '.bin'; a.click(); URL.revokeObjectURL(url); })
+            .catch(err => alert(err.message));
+        };
+      });
 
       uploadBtn.onclick = async () => {
         const file = fileInput.files[0];

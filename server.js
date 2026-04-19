@@ -533,6 +533,32 @@ app.post('/api/firmware/upload', auth, upload.single('firmware'), async (req, re
   }
 });
 
+// ─── Download current firmware binary ───
+app.get('/api/firmware/download', auth, (req, res) => {
+  const fwPath = path.join(FIRMWARE_DIR, 'firmware.bin');
+  if (!fs.existsSync(fwPath)) return res.status(404).json({ error: 'No firmware file available' });
+  try {
+    const jsonPath = path.join(FIRMWARE_DIR, 'fw_latest.json');
+    let filename = 'firmware.bin';
+    if (fs.existsSync(jsonPath)) {
+      const info = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+      filename = `GRIDx_firmware_v${info.version}.bin`;
+    }
+    res.download(fwPath, filename);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Download a specific firmware version ───
+app.get('/api/firmware/download/:version', auth, (req, res) => {
+  const ver = req.params.version;
+  const filename = `firmware_${ver.replace(/\./g, '_')}.bin`;
+  const fwPath = path.join(FIRMWARE_DIR, filename);
+  if (!fs.existsSync(fwPath)) return res.status(404).json({ error: `Firmware v${ver} not found` });
+  res.download(fwPath, `GRIDx_firmware_v${ver}.bin`);
+});
+
 // ─── List meters (with firmware version from OTA status + health reports) ───
 app.get('/api/meters', auth, async (req, res) => {
   try {
