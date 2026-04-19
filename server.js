@@ -161,9 +161,9 @@ function getMqtt() {
 
     mqttClient.on('connect', () => {
       console.log('[MQTT] Connected');
-      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health'], { qos: 0 }, (err) => {
+      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req'], { qos: 0 }, (err) => {
         if (err) console.error('[MQTT] Subscribe error:', err.message);
-        else console.log('[MQTT] Subscribed to OTA progress & health topics');
+        else console.log('[MQTT] Subscribed to OTA progress, health & nextion topics');
       });
     });
 
@@ -210,6 +210,59 @@ function handleMqttMessage(topic, buf) {
     }
   }
 
+  // Handle Nextion TFT OTA requests: gx/{drn}/nextion/req
+  if (type === 'nextion' && parts[3] === 'req') {
+    let msg;
+    try { msg = JSON.parse(buf.toString()); } catch { return; }
+
+    if (msg.action === 'chunk') {
+      const offset = msg.offset || 0;
+      const requestedSize = msg.size || 4096;
+      const tftPath = path.join(FIRMWARE_DIR, 'nextion.tft');
+      const tft = loadNextionTft(tftPath);
+      if (!tft) {
+        console.error(`[Nextion] No TFT file for chunk request from ${drn}`);
+        return;
+      }
+      const remaining = tft.size - offset;
+      if (remaining <= 0) {
+        console.log(`[Nextion] ${drn}: offset ${offset} beyond TFT size ${tft.size}`);
+        return;
+      }
+      const chunkSize = Math.min(requestedSize, remaining);
+
+      // Binary response: [4B offset BE][4B length BE][data]
+      const header = Buffer.alloc(8);
+      header.writeUInt32BE(offset, 0);
+      header.writeUInt32BE(chunkSize, 4);
+      const chunkData = tft.data.slice(offset, offset + chunkSize);
+      const response = Buffer.concat([header, chunkData]);
+
+      const dataTopic = `gx/${drn}/nextion/data`;
+      mqttClient.publish(dataTopic, response, { qos: 1 }, (err) => {
+        if (err) {
+          console.error(`[Nextion] Publish failed for ${drn} offset ${offset}:`, err.message);
+          return;
+        }
+        const progress = Math.min(100, Math.round(((offset + chunkSize) / tft.size) * 100));
+        setNextionOtaStatus(drn, 'updating', progress, `Downloading: ${offset + chunkSize} / ${tft.size} bytes`);
+        if (progress % 10 === 0 || offset === 0 || offset + chunkSize >= tft.size) {
+          console.log(`[Nextion] ${drn}: chunk offset=${offset} size=${chunkSize} progress=${progress}%`);
+        }
+      });
+
+    } else if (msg.action === 'complete') {
+      setNextionOtaStatus(drn, 'complete', 100, 'Nextion display updated');
+      console.log(`[Nextion] ${drn}: TFT update complete`);
+    } else if (msg.action === 'error') {
+      setNextionOtaStatus(drn, 'error', 0, msg.detail || 'Nextion update failed');
+      console.error(`[Nextion] ${drn}: Error - ${msg.detail || 'unknown'}`);
+    } else if (msg.action === 'flashing') {
+      const progress = msg.progress || 0;
+      setNextionOtaStatus(drn, 'updating', progress, `Flashing to display: ${progress}%`);
+    }
+  }
+
   if (type === 'health') {
     try {
       const data = JSON.parse(buf.toString());
@@ -234,6 +287,55 @@ function getFirmwareInfo() {
   } catch { return null; }
 }
 
+function getNextionInfo() {
+  const infoPath = path.join(FIRMWARE_DIR, 'nextion_latest.json');
+  try {
+    return JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+  } catch { return null; }
+}
+
+// ─── Nextion OTA state (separate from firmware OTA) ───
+const nextionOtaState = {};
+
+async function setNextionOtaStatus(drn, status, progress, detail) {
+  if (!nextionOtaState[drn]) {
+    nextionOtaState[drn] = { status: 'idle', progress: 0, startedAt: null, updatedAt: null, completedAt: null, detail: '' };
+  }
+  nextionOtaState[drn].status = status;
+  nextionOtaState[drn].progress = progress;
+  nextionOtaState[drn].updatedAt = new Date();
+  if (detail !== undefined) nextionOtaState[drn].detail = detail;
+  if (status === 'updating' && !nextionOtaState[drn].startedAt) {
+    nextionOtaState[drn].startedAt = new Date();
+  }
+  if (status === 'complete') {
+    nextionOtaState[drn].completedAt = new Date();
+  }
+  if (status === 'idle') {
+    nextionOtaState[drn].startedAt = null;
+  }
+  broadcastSSE({ type: 'nextion_progress', drn, ...nextionOtaState[drn] });
+}
+
+// ─── Nextion TFT file cache ───
+let nextionCache = null;
+
+function loadNextionTft(tftPath) {
+  try {
+    const stat = fs.statSync(tftPath);
+    if (nextionCache && nextionCache.path === tftPath && nextionCache.mtime === stat.mtimeMs) {
+      return nextionCache;
+    }
+    const data = fs.readFileSync(tftPath);
+    nextionCache = { path: tftPath, data, size: data.length, mtime: stat.mtimeMs };
+    console.log(`[Nextion] TFT loaded: ${tftPath} (${data.length} bytes)`);
+    return nextionCache;
+  } catch (err) {
+    console.error(`[Nextion] Failed to load TFT: ${err.message}`);
+    return null;
+  }
+}
+
 // ─── Multer for firmware upload ───
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, FIRMWARE_DIR),
@@ -245,6 +347,20 @@ const upload = multer({
   fileFilter: (req, file, cb) => {
     if (file.originalname.endsWith('.bin')) cb(null, true);
     else cb(new Error('Only .bin files accepted'));
+  },
+});
+
+// ─── Multer for Nextion TFT upload ───
+const tftStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, FIRMWARE_DIR),
+  filename: (req, file, cb) => cb(null, 'nextion.tft'),
+});
+const tftUpload = multer({
+  storage: tftStorage,
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (file.originalname.endsWith('.tft')) cb(null, true);
+    else cb(new Error('Only .tft files accepted'));
   },
 });
 
@@ -285,13 +401,13 @@ app.get('/api/ota/events', auth, (req, res) => {
     'Connection': 'keep-alive',
     'X-Accel-Buffering': 'no',
   });
-  res.write(`data: ${JSON.stringify({ type: 'init', otaState, meterFirmwareVersions })}\n\n`);
+  res.write(`data: ${JSON.stringify({ type: 'init', otaState, meterFirmwareVersions, nextionOtaState })}\n\n`);
   sseClients.add(res);
   req.on('close', () => sseClients.delete(res));
 });
 
 app.get('/api/ota/status', auth, (req, res) => {
-  res.json({ otaState, meterFirmwareVersions });
+  res.json({ otaState, meterFirmwareVersions, nextionOtaState });
 });
 
 app.get('/api/firmware/info', auth, (req, res) => {
@@ -450,6 +566,139 @@ app.post('/api/ota/push', auth, (req, res) => {
 
     console.log(`[OTA] Pushed v${info.version} to ${drn}`);
     res.json({ success: true, message: `OTA pushed to ${drn}`, command: cmd });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Nextion TFT API Routes
+// ═══════════════════════════════════════════════════════════
+
+app.get('/api/nextion/info', auth, (req, res) => {
+  const infoPath = path.join(FIRMWARE_DIR, 'nextion_latest.json');
+  if (!fs.existsSync(infoPath)) {
+    return res.json({ available: false });
+  }
+  try {
+    const info = JSON.parse(fs.readFileSync(infoPath, 'utf8'));
+    const stat = fs.statSync(path.join(FIRMWARE_DIR, 'nextion.tft'));
+    res.json({ available: true, ...info, uploaded_at: stat.mtime });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/nextion/upload', auth, tftUpload.single('tft'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file provided' });
+  const { version } = req.body;
+  if (!version) return res.status(400).json({ error: 'Missing version' });
+
+  try {
+    const tftPath = path.join(FIRMWARE_DIR, 'nextion.tft');
+    const tftData = fs.readFileSync(tftPath);
+    const info = {
+      version,
+      size: tftData.length,
+      chunk_size: 4096,
+    };
+    fs.writeFileSync(path.join(FIRMWARE_DIR, 'nextion_latest.json'), JSON.stringify(info, null, 2));
+    const backup = `nextion_${version.replace(/\./g, '_')}.tft`;
+    fs.copyFileSync(tftPath, path.join(FIRMWARE_DIR, backup));
+
+    // Reset nextion OTA states
+    for (const drn in nextionOtaState) {
+      nextionOtaState[drn].status = 'idle';
+      nextionOtaState[drn].progress = 0;
+      nextionOtaState[drn].detail = '';
+    }
+
+    console.log(`[Nextion] Uploaded v${version} (${tftData.length} bytes)`);
+    res.json({ success: true, message: `Nextion TFT v${version} uploaded`, nextion: info });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/nextion/versions', auth, (req, res) => {
+  try {
+    const files = fs.readdirSync(FIRMWARE_DIR)
+      .filter(f => f.startsWith('nextion_') && f.endsWith('.tft'))
+      .map(f => {
+        const stat = fs.statSync(path.join(FIRMWARE_DIR, f));
+        const ver = f.replace('nextion_', '').replace('.tft', '').replace(/_/g, '.');
+        return { filename: f, version: ver, size: stat.size, date: stat.mtime };
+      })
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
+    res.json({ versions: files });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/nextion/status', auth, (req, res) => {
+  res.json({ nextionOtaState });
+});
+
+app.post('/api/nextion/push', auth, (req, res) => {
+  const { drn } = req.body;
+  if (!drn) return res.status(400).json({ error: 'Missing drn' });
+
+  try {
+    const info = getNextionInfo();
+    if (!info) return res.status(400).json({ error: 'No Nextion TFT uploaded' });
+
+    const client = getMqtt();
+    const cmd = {
+      type: 'nextion_ota',
+      action: 'start',
+      version: info.version,
+      size: info.size,
+      chunk_size: info.chunk_size || 4096,
+    };
+    client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+
+    setNextionOtaStatus(drn, 'updating', 0, `Pushed Nextion v${info.version} - waiting for meter`);
+    console.log(`[Nextion] Pushed v${info.version} to ${drn}`);
+    res.json({ success: true, message: `Nextion TFT pushed to ${drn}`, command: cmd });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/nextion/push-all', auth, async (req, res) => {
+  try {
+    const info = getNextionInfo();
+    if (!info) return res.status(400).json({ error: 'No Nextion TFT uploaded' });
+
+    const db = await getDb();
+    const [rows] = await db.query('SELECT DRN as drn FROM MeterProfileReal');
+    const client = getMqtt();
+    const cmd = {
+      type: 'nextion_ota',
+      action: 'start',
+      version: info.version,
+      size: info.size,
+      chunk_size: info.chunk_size || 4096,
+    };
+    const cmdStr = JSON.stringify(cmd);
+
+    let pushed = 0;
+    const results = [];
+    for (const row of rows) {
+      client.publish(`gx/${row.drn}/cmd`, cmdStr, { qos: 1 });
+      setNextionOtaStatus(row.drn, 'updating', 0, `Pushed Nextion v${info.version} - waiting for meter`);
+      results.push(row.drn);
+      pushed++;
+    }
+
+    console.log(`[Nextion] Pushed v${info.version} to ALL ${pushed} meters`);
+    res.json({
+      success: true,
+      message: `Nextion TFT pushed to ${pushed} meter(s)`,
+      meters: results,
+      nextion: { version: info.version, size: info.size },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -221,6 +221,9 @@
       meters: [],
       otaState: {},
       meterFirmwareVersions: {},
+      nextion: null,
+      nextionVersions: [],
+      nextionOtaState: {},
     };
 
     let eventSource = null;
@@ -281,6 +284,18 @@
           // Update firmware versions
           for (const drn in data.meterFirmwareVersions) {
             state.meterFirmwareVersions[drn] = data.meterFirmwareVersions[drn];
+          }
+
+          // Update Nextion OTA state
+          if (data.nextionOtaState) {
+            for (const drn in data.nextionOtaState) {
+              const prev = state.nextionOtaState[drn];
+              const curr = data.nextionOtaState[drn];
+              if (!prev || prev.status !== curr.status || prev.progress !== curr.progress) {
+                changed = true;
+              }
+              state.nextionOtaState[drn] = curr;
+            }
           }
 
           if (changed) {
@@ -381,6 +396,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
                 Push OTA
               </div>
+              <div class="sidebar-item" data-page="nextion">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="9" y1="18" x2="15" y2="18"/></svg>
+                Nextion Display
+              </div>
               <div class="sidebar-item" data-page="meters">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 Meters
@@ -413,17 +432,22 @@
 
     async function loadData() {
       try {
-        const [fw, vers, meters, otaStatus] = await Promise.all([
+        const [fw, vers, meters, otaStatus, nxInfo, nxVers] = await Promise.all([
           api('/api/firmware/info').catch(() => null),
           api('/api/firmware/versions').catch(() => ({ versions: [] })),
           api('/api/meters').catch(() => ({ meters: [] })),
-          api('/api/ota/status').catch(() => ({ otaState: {}, meterFirmwareVersions: {} })),
+          api('/api/ota/status').catch(() => ({ otaState: {}, meterFirmwareVersions: {}, nextionOtaState: {} })),
+          api('/api/nextion/info').catch(() => null),
+          api('/api/nextion/versions').catch(() => ({ versions: [] })),
         ]);
         state.firmware = fw;
         state.versions = vers.versions || [];
         state.meters = meters.meters || [];
         state.otaState = otaStatus.otaState || {};
         state.meterFirmwareVersions = otaStatus.meterFirmwareVersions || {};
+        state.nextion = nxInfo;
+        state.nextionVersions = nxVers.versions || [];
+        state.nextionOtaState = otaStatus.nextionOtaState || {};
         renderPage();
       } catch {}
     }
@@ -434,6 +458,7 @@
       switch (currentPage) {
         case 'firmware': main.innerHTML = renderFirmwarePage(); bindFirmwarePage(); break;
         case 'push': main.innerHTML = renderPushPage(); bindPushPage(); break;
+        case 'nextion': main.innerHTML = renderNextionPage(); bindNextionPage(); break;
         case 'meters': main.innerHTML = renderMetersPage(); break;
       }
     }
@@ -718,6 +743,222 @@
           }
           pushOneBtn.disabled = false;
           pushOneBtn.innerHTML = 'Push OTA';
+        };
+      }
+    }
+
+    // ─── Nextion Display Page ───
+    function getNextionStatus(drn) {
+      const nxState = state.nextionOtaState[drn] || { status: 'idle', progress: 0, detail: '' };
+      if (nxState.status === 'updating') {
+        return { label: 'Updating', chipClass: 'orange', dotClass: 'orange', progress: nxState.progress, detail: nxState.detail };
+      }
+      if (nxState.status === 'complete') {
+        return { label: 'Updated', chipClass: '', dotClass: 'green', progress: 100, detail: nxState.detail };
+      }
+      if (nxState.status === 'error') {
+        return { label: 'Error', chipClass: 'red', dotClass: 'red', progress: 0, detail: nxState.detail };
+      }
+      return { label: 'Idle', chipClass: 'gray', dotClass: 'gray', progress: null, detail: '' };
+    }
+
+    function renderNextionPage() {
+      const nx = state.nextion;
+      return `
+        <div class="page-title">Nextion Display</div>
+        <div class="page-subtitle">Upload and push Nextion TFT display firmware to meters</div>
+        <div class="divider"></div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="card-title">Current Nextion TFT</div>
+            <button class="refresh-btn" onclick="loadData()">&#x21bb;</button>
+          </div>
+          ${nx && nx.available !== false ? `
+            <div class="info-row">
+              <div class="info-block"><label>Version</label><div class="value">v${nx.version}</div></div>
+              <div class="info-block"><label>Size</label><div class="value blue">${(nx.size/1024).toFixed(1)} KB</div></div>
+              <div class="info-block"><label>Chunk Size</label><div class="value blue">${nx.chunk_size || 4096} B</div></div>
+            </div>
+          ` : '<div style="color:#6b7280">No Nextion TFT uploaded yet</div>'}
+        </div>
+
+        <div class="card">
+          <div class="card-title">Upload New TFT File</div>
+          <div class="description">Upload a compiled Nextion .tft file. This will be sent to meters via MQTT for display update.</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>TFT Binary</label>
+              <button class="btn btn-outline file-btn">
+                <span id="tft-file-label">Select .tft file</span>
+                <input type="file" id="tft-file" accept=".tft">
+              </button>
+            </div>
+            <div class="form-group">
+              <label>Version</label>
+              <input type="text" id="tft-version" placeholder="e.g. 1.0.0" style="width:160px">
+            </div>
+            <button class="btn btn-primary" id="tft-upload-btn" disabled>Upload TFT</button>
+          </div>
+          <div id="tft-upload-result"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Push to All Meters</div>
+          <div class="description">Send the current Nextion TFT to every meter (${state.meters.length} meter${state.meters.length !== 1 ? 's' : ''}). The ESP32 will download chunks via MQTT and flash the Nextion display.</div>
+          <button class="btn btn-red" id="nx-push-all-btn" ${!nx ? 'disabled' : ''}>
+            Push TFT to All ${state.meters.length} Meters
+          </button>
+          <div id="nx-push-all-result"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Push to Single Meter</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Select Meter</label>
+              <select id="nx-push-drn" style="min-width:250px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                <option value="">-- Select a meter --</option>
+                ${state.meters.map(m => {
+                  const st = getNextionStatus(m.drn);
+                  return '<option value="' + m.drn + '">' + m.drn + (m.customer ? ' (' + m.customer.trim() + ')' : '') + ' - ' + st.label + '</option>';
+                }).join('')}
+              </select>
+            </div>
+            <button class="btn btn-blue" id="nx-push-one-btn" ${!nx ? 'disabled' : ''}>Push TFT</button>
+          </div>
+          <div id="nx-push-one-result"></div>
+        </div>
+
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div class="card-title" style="margin-bottom:0">Meter Nextion Update Status</div>
+            <button class="refresh-btn" onclick="loadData()">&#x21bb;</button>
+          </div>
+          <div class="description" style="margin-top:12px">Real-time progress of Nextion display updates. The ESP32 downloads the TFT via MQTT, saves to SPIFFS, then flashes the Nextion display via serial.</div>
+          <div id="nx-status-list">
+            ${state.meters.length === 0 ? '<div style="color:#6b7280">No meters found</div>' :
+              state.meters.map(m => {
+                const st = getNextionStatus(m.drn);
+                if (st.label === 'Idle') return '';
+                return `
+                  <div class="ota-meter-card">
+                    <div class="ota-meter-drn">
+                      <span class="status-dot ${st.dotClass}"></span>
+                      ${m.drn}
+                    </div>
+                    <div class="ota-meter-info">
+                      <div style="font-size:12px;color:#9ca3af;margin-bottom:2px">
+                        ${m.customer ? m.customer.trim() : ''}
+                      </div>
+                      ${st.progress !== null ? `
+                        <div class="progress-container">
+                          <div class="progress-bar ${st.progress >= 100 ? 'complete' : ''} ${st.chipClass === 'red' ? 'error' : ''}" style="width:${st.progress}%"></div>
+                        </div>
+                        <div class="progress-text">${st.detail || ''} ${st.progress > 0 ? '(' + st.progress + '%)' : ''}</div>
+                      ` : `
+                        <div class="progress-text">${st.detail || ''}</div>
+                      `}
+                    </div>
+                    <div class="ota-meter-status">
+                      <span class="chip ${st.chipClass}">${st.label}</span>
+                    </div>
+                  </div>
+                `;
+              }).join('') || '<div style="color:#6b7280;padding:8px 0">No active Nextion updates</div>'
+            }
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Version History</div>
+          ${state.nextionVersions.length === 0 ? '<div style="color:#6b7280">No versions found</div>' : `
+            <table>
+              <thead><tr><th>Version</th><th>Filename</th><th>Size</th><th>Date</th></tr></thead>
+              <tbody>
+                ${state.nextionVersions.map(v => `
+                  <tr>
+                    <td><span class="chip blue">${v.version}</span></td>
+                    <td class="mono">${v.filename}</td>
+                    <td>${(v.size/1024).toFixed(1)} KB</td>
+                    <td>${new Date(v.date).toLocaleString()}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          `}
+        </div>
+      `;
+    }
+
+    function bindNextionPage() {
+      const fileInput = $('#tft-file');
+      const uploadBtn = $('#tft-upload-btn');
+      if (fileInput && uploadBtn) {
+        fileInput.onchange = () => {
+          const f = fileInput.files[0];
+          $('#tft-file-label').textContent = f ? f.name + ' (' + (f.size/1024).toFixed(1) + ' KB)' : 'Select .tft file';
+          uploadBtn.disabled = !f;
+        };
+
+        uploadBtn.onclick = async () => {
+          const file = fileInput.files[0];
+          const version = $('#tft-version').value.trim();
+          if (!file || !version) {
+            $('#tft-upload-result').innerHTML = '<div class="alert alert-error">Please select a file and enter a version</div>';
+            return;
+          }
+          uploadBtn.disabled = true;
+          uploadBtn.innerHTML = '<span class="spinner"></span> Uploading...';
+          try {
+            const fd = new FormData();
+            fd.append('tft', file);
+            fd.append('version', version);
+            const data = await api('/api/nextion/upload', { method: 'POST', body: fd });
+            $('#tft-upload-result').innerHTML = '<div class="alert alert-success"><strong>' + data.message + '</strong><br><span class="mono" style="font-size:12px">Size: ' + data.nextion.size + ' bytes</span></div>';
+            loadData();
+          } catch (err) {
+            $('#tft-upload-result').innerHTML = '<div class="alert alert-error">' + err.message + '</div>';
+          }
+          uploadBtn.disabled = false;
+          uploadBtn.innerHTML = 'Upload TFT';
+        };
+      }
+
+      const pushAllBtn = $('#nx-push-all-btn');
+      if (pushAllBtn) {
+        pushAllBtn.onclick = async () => {
+          if (!confirm('Push Nextion TFT to ALL ' + state.meters.length + ' meters? This will trigger display updates on every connected meter.')) return;
+          pushAllBtn.disabled = true;
+          pushAllBtn.innerHTML = '<span class="spinner"></span> Pushing to all meters...';
+          try {
+            const data = await api('/api/nextion/push-all', { method: 'POST', body: '{}' });
+            $('#nx-push-all-result').innerHTML = '<div class="alert alert-success"><strong>' + data.message + '</strong><br>Nextion v' + data.nextion.version + ' sent to: ' + data.meters.join(', ') + '</div>';
+            loadData();
+          } catch (err) {
+            $('#nx-push-all-result').innerHTML = '<div class="alert alert-error">' + err.message + '</div>';
+          }
+          pushAllBtn.disabled = false;
+          pushAllBtn.innerHTML = 'Push TFT to All ' + state.meters.length + ' Meters';
+        };
+      }
+
+      const pushOneBtn = $('#nx-push-one-btn');
+      if (pushOneBtn) {
+        pushOneBtn.onclick = async () => {
+          const drn = $('#nx-push-drn').value;
+          if (!drn) { $('#nx-push-one-result').innerHTML = '<div class="alert alert-error">Select a meter</div>'; return; }
+          pushOneBtn.disabled = true;
+          pushOneBtn.innerHTML = '<span class="spinner"></span> Pushing...';
+          try {
+            const data = await api('/api/nextion/push', { method: 'POST', body: JSON.stringify({ drn }) });
+            $('#nx-push-one-result').innerHTML = '<div class="alert alert-success">' + data.message + '</div>';
+            loadData();
+          } catch (err) {
+            $('#nx-push-one-result').innerHTML = '<div class="alert alert-error">' + err.message + '</div>';
+          }
+          pushOneBtn.disabled = false;
+          pushOneBtn.innerHTML = 'Push TFT';
         };
       }
     }
