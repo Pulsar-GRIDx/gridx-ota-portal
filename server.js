@@ -161,9 +161,9 @@ function getMqtt() {
 
     mqttClient.on('connect', () => {
       console.log('[MQTT] Connected');
-      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req'], { qos: 0 }, (err) => {
+      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req', 'gx/+/ack'], { qos: 0 }, (err) => {
         if (err) console.error('[MQTT] Subscribe error:', err.message);
-        else console.log('[MQTT] Subscribed to OTA progress, health & nextion topics');
+        else console.log('[MQTT] Subscribed to OTA progress, health, nextion & ack topics');
       });
     });
 
@@ -276,9 +276,21 @@ function handleMqttMessage(topic, buf) {
       }
     } catch {}
   }
+
+  if (type === 'ack') {
+    try {
+      const data = JSON.parse(buf.toString());
+      const ackType = data.type || 'unknown';
+      const key = `${drn}_${ackType}`;
+      cmdResponses[key] = { drn, ...data, receivedAt: new Date() };
+      broadcastSSE({ type: 'cmd_ack', drn, ack: data });
+      console.log(`[CMD] Ack from ${drn}: ${ackType}`);
+    } catch {}
+  }
 }
 
 const meterFirmwareVersions = {};
+const cmdResponses = {};
 
 function getFirmwareInfo() {
   const infoPath = path.join(FIRMWARE_DIR, 'fw_latest.json');
@@ -830,6 +842,188 @@ app.post('/api/ota/push-all', auth, async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ═══════════════════════════════════════════════════════════
+// Meter Management Commands
+// ═══════════════════════════════════════════════════════════
+
+app.post('/api/cmd/send', auth, (req, res) => {
+  const { drn, command } = req.body;
+  if (!drn || !command) return res.status(400).json({ error: 'Missing drn or command' });
+  const client = getMqtt();
+  const topic = `gx/${drn}/cmd`;
+  client.publish(topic, JSON.stringify(command), { qos: 1 });
+  res.json({ ok: true, topic });
+});
+
+app.post('/api/cmd/response/:drn', auth, (req, res) => {
+  const { drn } = req.params;
+  const filtered = {};
+  for (const key of Object.keys(cmdResponses)) {
+    if (key.startsWith(`${drn}_`)) filtered[key] = cmdResponses[key];
+  }
+  res.json({ drn, responses: filtered });
+});
+
+app.get('/api/cmd/acks/:drn', auth, (req, res) => {
+  const { drn } = req.params;
+  const filtered = {};
+  for (const key of Object.keys(cmdResponses)) {
+    if (key.startsWith(`${drn}_`)) filtered[key] = cmdResponses[key];
+  }
+  res.json({ drn, acks: filtered });
+});
+
+app.post('/api/cmd/relay-control', auth, (req, res) => {
+  const { drn, relay, action } = req.body;
+  if (!drn || !relay || !action) return res.status(400).json({ error: 'Missing drn, relay, or action' });
+  const validRelays = ['mains', 'geyser'];
+  const validActions = ['on', 'off', 'enable', 'disable'];
+  if (!validRelays.includes(relay)) return res.status(400).json({ error: 'relay must be mains or geyser' });
+  if (!validActions.includes(action)) return res.status(400).json({ error: 'action must be on, off, enable, or disable' });
+
+  const map = {
+    'mains_on': { ms: 1 }, 'mains_off': { ms: 0 },
+    'mains_enable': { mc: 1 }, 'mains_disable': { mc: 0 },
+    'geyser_on': { gs: 1 }, 'geyser_off': { gs: 0 },
+    'geyser_enable': { gc: 1 }, 'geyser_disable': { gc: 0 },
+  };
+  const cmd = map[`${relay}_${action}`];
+  const client = getMqtt();
+  const topic = `gx/${drn}/cmd`;
+  client.publish(topic, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic, command: cmd });
+});
+
+app.post('/api/cmd/geyser-mode', auth, (req, res) => {
+  const { drn, mode } = req.body;
+  if (!drn || !mode) return res.status(400).json({ error: 'Missing drn or mode' });
+  const validModes = ['manual', 'timer', 'schedule'];
+  if (!validModes.includes(mode)) return res.status(400).json({ error: 'mode must be manual, timer, or schedule' });
+  const cmd = { type: 'geyser_mode', mode };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/geyser-timer', auth, (req, res) => {
+  const { drn, action, hours, minutes } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['start', 'stop'].includes(action)) return res.status(400).json({ error: 'action must be start or stop' });
+  const cmd = { type: 'geyser_timer', action };
+  if (action === 'start') {
+    cmd.hours = hours || 0;
+    cmd.minutes = minutes || 0;
+  }
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/geyser-schedule', auth, (req, res) => {
+  const { drn, schedules } = req.body;
+  if (!drn || !schedules) return res.status(400).json({ error: 'Missing drn or schedules' });
+  const cmd = { type: 'geyser_schedule_sync', schedules };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/token', auth, (req, res) => {
+  const { drn, token } = req.body;
+  if (!drn || !token) return res.status(400).json({ error: 'Missing drn or token' });
+  if (!/^\d{20}$/.test(token)) return res.status(400).json({ error: 'Token must be 20 digits' });
+  const cmd = { type: 'token', token };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/calibrate', auth, (req, res) => {
+  const { drn, action } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['auto', 'verify'].includes(action)) return res.status(400).json({ error: 'action must be auto or verify' });
+  const cmd = { type: 'calibrate', action };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/net-metering-mode', auth, (req, res) => {
+  const { drn, mode, feed_in_rate } = req.body;
+  if (!drn || !mode) return res.status(400).json({ error: 'Missing drn or mode' });
+  const validModes = ['gross', 'net_billing', 'feed_in', 'tou'];
+  if (!validModes.includes(mode)) return res.status(400).json({ error: 'mode must be gross, net_billing, feed_in, or tou' });
+  const cmd = { type: 'net_metering_mode', mode };
+  if (feed_in_rate !== undefined) cmd.feed_in_rate = feed_in_rate;
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/billing-mode', auth, (req, res) => {
+  const { drn, mode } = req.body;
+  if (!drn || !mode) return res.status(400).json({ error: 'Missing drn or mode' });
+  if (!['prepaid', 'postpaid'].includes(mode)) return res.status(400).json({ error: 'mode must be prepaid or postpaid' });
+  const cmd = { type: 'billing_mode', mode };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/device', auth, (req, res) => {
+  const { drn, action } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  const validActions = ['restart', 'sleep', 'wake', 'reset_ble', 'relay_log_request', 'energy_usage_request'];
+  if (!validActions.includes(action)) return res.status(400).json({ error: `action must be one of: ${validActions.join(', ')}` });
+  const cmd = { type: action };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/auth-numbers', auth, (req, res) => {
+  const { drn, action, number } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['add', 'remove', 'list'].includes(action)) return res.status(400).json({ error: 'action must be add, remove, or list' });
+  if (action !== 'list' && !number) return res.status(400).json({ error: 'number required for add/remove' });
+  const cmd = { type: `auth_number_${action}` };
+  if (number) cmd.number = number;
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/commissioning', auth, (req, res) => {
+  const { drn, action } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['enter', 'exit', 'status'].includes(action)) return res.status(400).json({ error: 'action must be enter, exit, or status' });
+  const cmd = { type: 'commissioning_mode', action };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/energy-test', auth, (req, res) => {
+  const { drn, action, duration_s } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['start', 'status'].includes(action)) return res.status(400).json({ error: 'action must be start or status' });
+  const cmd = { type: 'energy_test', action };
+  if (duration_s !== undefined) cmd.duration_s = duration_s;
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/tou-mode', auth, (req, res) => {
+  const { drn, mode } = req.body;
+  if (!drn || mode === undefined) return res.status(400).json({ error: 'Missing drn or mode' });
+  if (![0, 1, 2].includes(mode)) return res.status(400).json({ error: 'mode must be 0, 1, or 2' });
+  const cmd = { type: 'tou_mode', mode };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
 });
 
 // ═══════════════════════════════════════════════════════════

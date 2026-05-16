@@ -404,6 +404,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
                 Meters
               </div>
+              <div class="sidebar-item" data-page="management">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15 1.65 1.65 0 003 14.08V14a2 2 0 014 0v.09a1.65 1.65 0 001 1.51zM21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                Meter Config
+              </div>
             </div>
             <div class="sidebar-footer">
               <div style="margin-bottom:8px">Logged in as <strong>${state.user?.username || ''}</strong></div>
@@ -460,6 +464,7 @@
         case 'push': main.innerHTML = renderPushPage(); bindPushPage(); break;
         case 'nextion': main.innerHTML = renderNextionPage(); bindNextionPage(); break;
         case 'meters': main.innerHTML = renderMetersPage(); break;
+        case 'management': main.innerHTML = renderManagementPage(); bindManagementPage(); break;
       }
     }
 
@@ -1112,6 +1117,406 @@
           `}
         </div>
       `;
+    }
+
+    // ─── Meter Management Page ───
+    let mgmtDrn = '';
+    let mgmtAcks = {};
+    let ackPollInterval = null;
+
+    function startAckPolling() {
+      stopAckPolling();
+      if (!mgmtDrn) return;
+      ackPollInterval = setInterval(async () => {
+        try {
+          const data = await api(`/api/cmd/acks/${mgmtDrn}`);
+          mgmtAcks = data.acks || {};
+          const el = document.getElementById('ack-log');
+          if (el) el.innerHTML = renderAckLog();
+        } catch {}
+      }, 2000);
+    }
+
+    function stopAckPolling() {
+      if (ackPollInterval) { clearInterval(ackPollInterval); ackPollInterval = null; }
+    }
+
+    function renderAckLog() {
+      const keys = Object.keys(mgmtAcks);
+      if (keys.length === 0) return '<div style="color:#62b3e0;font-size:12px">No responses yet</div>';
+      return keys.slice(-10).reverse().map(k => {
+        const a = mgmtAcks[k];
+        const time = a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : '';
+        return `<div style="padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:12px">
+          <span style="color:#4ade80">${time}</span> <span class="mono" style="color:#9ca3af">${k.replace(mgmtDrn+'_','')}</span>: <span style="color:#e0e0e0">${JSON.stringify(a.payload||a)}</span>
+        </div>`;
+      }).join('');
+    }
+
+    async function sendCmd(endpoint, body, resultId) {
+      const el = document.getElementById(resultId);
+      if (el) el.innerHTML = '<span class="spinner"></span>';
+      try {
+        const data = await api(`/api/cmd/${endpoint}`, { method: 'POST', body: JSON.stringify({ drn: mgmtDrn, ...body }) });
+        if (el) el.innerHTML = `<div class="alert alert-success" style="margin-top:8px;padding:8px 12px">Sent: ${JSON.stringify(data.command)}</div>`;
+      } catch (err) {
+        if (el) el.innerHTML = `<div class="alert alert-error" style="margin-top:8px;padding:8px 12px">${err.message}</div>`;
+      }
+    }
+
+    function renderManagementPage() {
+      return `
+        <div class="page-title">Meter Configuration</div>
+        <div class="page-subtitle">Send MQTT commands to configure meters remotely</div>
+        <div class="divider"></div>
+
+        <div class="card">
+          <div class="card-title">Select Meter</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Meter DRN</label>
+              <select id="mgmt-drn" style="min-width:300px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                <option value="">-- Select a meter --</option>
+                ${state.meters.map(m => `<option value="${m.drn}" ${m.drn === mgmtDrn ? 'selected' : ''}>${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div id="mgmt-panels" style="${mgmtDrn ? '' : 'opacity:0.4;pointer-events:none'}">
+
+          <!-- Relay Control -->
+          <div class="card">
+            <div class="card-title">Relay Control</div>
+            <div class="description">Control mains and geyser relays. Switch on/off or enable/disable remote control.</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:13px;font-weight:600;color:#e0e0e0;margin-bottom:12px">Mains Relay</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn btn-primary relay-btn" data-relay="mains" data-action="on" style="font-size:12px;padding:8px 14px">Switch ON</button>
+                  <button class="btn btn-red relay-btn" data-relay="mains" data-action="off" style="font-size:12px;padding:8px 14px">Switch OFF</button>
+                  <button class="btn btn-blue relay-btn" data-relay="mains" data-action="enable" style="font-size:12px;padding:8px 14px">Enable</button>
+                  <button class="btn btn-outline relay-btn" data-relay="mains" data-action="disable" style="font-size:12px;padding:8px 14px">Disable</button>
+                </div>
+              </div>
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:13px;font-weight:600;color:#e0e0e0;margin-bottom:12px">Geyser Relay</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn btn-primary relay-btn" data-relay="geyser" data-action="on" style="font-size:12px;padding:8px 14px">Switch ON</button>
+                  <button class="btn btn-red relay-btn" data-relay="geyser" data-action="off" style="font-size:12px;padding:8px 14px">Switch OFF</button>
+                  <button class="btn btn-blue relay-btn" data-relay="geyser" data-action="enable" style="font-size:12px;padding:8px 14px">Enable</button>
+                  <button class="btn btn-outline relay-btn" data-relay="geyser" data-action="disable" style="font-size:12px;padding:8px 14px">Disable</button>
+                </div>
+              </div>
+            </div>
+            <div id="relay-result"></div>
+          </div>
+
+          <!-- Geyser Management -->
+          <div class="card">
+            <div class="card-title">Geyser Management</div>
+            <div class="description">Configure geyser operating mode, countdown timer, and daily schedules.</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:12px;font-weight:600;color:#9ca3af;margin-bottom:8px">Operating Mode</div>
+                <select id="geyser-mode-sel" style="width:100%;padding:8px 12px;background:#161b2e;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:13px;margin-bottom:8px">
+                  <option value="manual">Manual</option>
+                  <option value="timer">Timer</option>
+                  <option value="schedule">Schedule</option>
+                </select>
+                <button class="btn btn-primary" id="geyser-mode-btn" style="font-size:12px;padding:8px 14px;width:100%">Set Mode</button>
+              </div>
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:12px;font-weight:600;color:#9ca3af;margin-bottom:8px">Countdown Timer</div>
+                <div style="display:flex;gap:6px;margin-bottom:8px">
+                  <input type="number" id="geyser-hrs" min="0" max="23" value="1" style="width:50%;padding:8px;background:#161b2e;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:13px" placeholder="Hrs">
+                  <input type="number" id="geyser-mins" min="0" max="59" value="0" style="width:50%;padding:8px;background:#161b2e;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:13px" placeholder="Min">
+                </div>
+                <div style="display:flex;gap:6px">
+                  <button class="btn btn-primary" id="geyser-timer-start" style="font-size:12px;padding:8px 10px;flex:1">Start</button>
+                  <button class="btn btn-red" id="geyser-timer-stop" style="font-size:12px;padding:8px 10px;flex:1">Stop</button>
+                </div>
+              </div>
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:12px;font-weight:600;color:#9ca3af;margin-bottom:8px">Schedule (HH:MM-HH:MM)</div>
+                <input type="text" id="geyser-sched" value="05:00-07:00,17:00-19:00" style="width:100%;padding:8px 12px;background:#161b2e;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:8px" placeholder="05:00-07:00,17:00-19:00">
+                <button class="btn btn-blue" id="geyser-sched-btn" style="font-size:12px;padding:8px 14px;width:100%">Sync Schedule</button>
+              </div>
+            </div>
+            <div id="geyser-result"></div>
+          </div>
+
+          <!-- STS Token -->
+          <div class="card">
+            <div class="card-title">STS Token Entry</div>
+            <div class="description">Send a 20-digit STS prepaid token to the meter for credit top-up.</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Token (20 digits)</label>
+                <input type="text" id="sts-token" maxlength="20" pattern="[0-9]{20}" placeholder="01234567890123456789" style="width:280px;font-family:monospace;letter-spacing:2px">
+              </div>
+              <button class="btn btn-primary" id="sts-send-btn">Send Token</button>
+            </div>
+            <div id="sts-result"></div>
+          </div>
+
+          <!-- Calibration -->
+          <div class="card">
+            <div class="card-title">Calibration</div>
+            <div class="description">Run auto-calibration or verify current calibration values on the meter.</div>
+            <div style="display:flex;gap:12px">
+              <button class="btn btn-blue" id="cal-auto-btn">Auto Calibrate</button>
+              <button class="btn btn-outline" id="cal-verify-btn">Verify Calibration</button>
+            </div>
+            <div id="cal-result"></div>
+          </div>
+
+          <!-- Net Metering Mode -->
+          <div class="card">
+            <div class="card-title">Net Metering Mode</div>
+            <div class="description">Configure the net metering operating mode and optional feed-in tariff rate.</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Mode</label>
+                <select id="nm-mode" style="min-width:180px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                  <option value="gross">Gross Metering</option>
+                  <option value="net_billing">Net Billing</option>
+                  <option value="feed_in">Feed-In Tariff</option>
+                  <option value="tou">Time of Use</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Feed-In Rate (N$/kWh)</label>
+                <input type="number" id="nm-rate" step="0.01" value="1.60" style="width:120px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+              </div>
+              <button class="btn btn-primary" id="nm-send-btn">Set Mode</button>
+            </div>
+            <div id="nm-result"></div>
+          </div>
+
+          <!-- Billing Mode -->
+          <div class="card">
+            <div class="card-title">Billing Mode</div>
+            <div class="description">Switch the meter between prepaid (STS token) and postpaid billing modes.</div>
+            <div style="display:flex;gap:12px">
+              <button class="btn btn-primary" id="bill-prepaid-btn">Set Prepaid</button>
+              <button class="btn btn-blue" id="bill-postpaid-btn">Set Postpaid</button>
+            </div>
+            <div id="bill-result"></div>
+          </div>
+
+          <!-- TOU Mode -->
+          <div class="card">
+            <div class="card-title">Time-of-Use (TOU) Mode</div>
+            <div class="description">Configure TOU tariff scheduling mode.</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>TOU Mode</label>
+                <select id="tou-mode-sel" style="min-width:200px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                  <option value="0">Mode 0 - Disabled</option>
+                  <option value="1">Mode 1 - Standard TOU</option>
+                  <option value="2">Mode 2 - Advanced TOU</option>
+                </select>
+              </div>
+              <button class="btn btn-primary" id="tou-send-btn">Set TOU</button>
+            </div>
+            <div id="tou-result"></div>
+          </div>
+
+          <!-- Device Management -->
+          <div class="card">
+            <div class="card-title">Device Management</div>
+            <div class="description">Send device-level commands: restart, sleep/wake, BLE reset, or request data.</div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button class="btn btn-red device-btn" data-action="restart">Restart</button>
+              <button class="btn btn-outline device-btn" data-action="sleep">Sleep</button>
+              <button class="btn btn-primary device-btn" data-action="wake">Wake</button>
+              <button class="btn btn-outline device-btn" data-action="reset_ble">Reset BLE</button>
+              <button class="btn btn-blue device-btn" data-action="relay_log_request">Request Relay Log</button>
+              <button class="btn btn-blue device-btn" data-action="energy_usage_request">Request Energy Data</button>
+            </div>
+            <div id="device-result"></div>
+          </div>
+
+          <!-- Authorized Numbers -->
+          <div class="card">
+            <div class="card-title">Authorized Numbers</div>
+            <div class="description">Manage phone numbers authorized to control the meter via SMS/USSD.</div>
+            <div class="form-row" style="margin-bottom:12px">
+              <div class="form-group">
+                <label>Phone Number</label>
+                <input type="text" id="auth-number" placeholder="+264812345678" style="width:200px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+              </div>
+              <button class="btn btn-primary" id="auth-add-btn">Add</button>
+              <button class="btn btn-red" id="auth-remove-btn">Remove</button>
+              <button class="btn btn-outline" id="auth-list-btn">List All</button>
+            </div>
+            <div id="auth-result"></div>
+          </div>
+
+          <!-- Commissioning -->
+          <div class="card">
+            <div class="card-title">Commissioning</div>
+            <div class="description">Enter/exit commissioning mode for meter installation and testing.</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:12px;font-weight:600;color:#9ca3af;margin-bottom:8px">Commissioning Mode</div>
+                <div style="display:flex;gap:8px">
+                  <button class="btn btn-primary comm-btn" data-action="enter" style="font-size:12px;flex:1">Enter</button>
+                  <button class="btn btn-red comm-btn" data-action="exit" style="font-size:12px;flex:1">Exit</button>
+                  <button class="btn btn-outline comm-btn" data-action="status" style="font-size:12px;flex:1">Status</button>
+                </div>
+              </div>
+              <div style="background:#0f1420;border-radius:8px;padding:16px">
+                <div style="font-size:12px;font-weight:600;color:#9ca3af;margin-bottom:8px">Energy Accuracy Test</div>
+                <div style="display:flex;gap:6px;align-items:flex-end">
+                  <div style="flex:1">
+                    <div style="font-size:10px;color:#62b3e0;margin-bottom:4px">Duration (sec)</div>
+                    <input type="number" id="etest-duration" value="60" min="10" max="3600" style="width:100%;padding:8px;background:#161b2e;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:13px">
+                  </div>
+                  <button class="btn btn-blue" id="etest-start-btn" style="font-size:12px;padding:8px 12px">Start Test</button>
+                  <button class="btn btn-outline" id="etest-status-btn" style="font-size:12px;padding:8px 12px">Status</button>
+                </div>
+              </div>
+            </div>
+            <div id="comm-result"></div>
+          </div>
+
+          <!-- Raw Command -->
+          <div class="card">
+            <div class="card-title">Raw MQTT Command</div>
+            <div class="description">Send a raw JSON command payload directly to the meter's command topic.</div>
+            <div class="form-row">
+              <div class="form-group" style="flex:1">
+                <label>JSON Payload</label>
+                <input type="text" id="raw-cmd" placeholder='{"type":"restart"}' style="width:100%;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px;font-family:monospace">
+              </div>
+              <button class="btn btn-primary" id="raw-send-btn">Send</button>
+            </div>
+            <div id="raw-result"></div>
+          </div>
+
+          <!-- Command Ack Log -->
+          <div class="card">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div class="card-title" style="margin-bottom:0">Command Responses</div>
+              <button class="refresh-btn" onclick="startAckPolling()">&#x21bb;</button>
+            </div>
+            <div class="description" style="margin-top:8px">Real-time acknowledgement responses from the selected meter (last 10).</div>
+            <div id="ack-log" style="max-height:200px;overflow-y:auto">${renderAckLog()}</div>
+          </div>
+
+        </div>
+      `;
+    }
+
+    function bindManagementPage() {
+      const drnSel = document.getElementById('mgmt-drn');
+      if (drnSel) {
+        drnSel.onchange = () => {
+          mgmtDrn = drnSel.value;
+          mgmtAcks = {};
+          const panels = document.getElementById('mgmt-panels');
+          if (panels) panels.style = mgmtDrn ? '' : 'opacity:0.4;pointer-events:none';
+          if (mgmtDrn) startAckPolling(); else stopAckPolling();
+        };
+      }
+
+      // Relay control
+      document.querySelectorAll('.relay-btn').forEach(btn => {
+        btn.onclick = () => sendCmd('relay-control', { relay: btn.dataset.relay, action: btn.dataset.action }, 'relay-result');
+      });
+
+      // Geyser mode
+      const geyserModeBtn = document.getElementById('geyser-mode-btn');
+      if (geyserModeBtn) geyserModeBtn.onclick = () => sendCmd('geyser-mode', { mode: document.getElementById('geyser-mode-sel').value }, 'geyser-result');
+
+      // Geyser timer
+      const timerStart = document.getElementById('geyser-timer-start');
+      const timerStop = document.getElementById('geyser-timer-stop');
+      if (timerStart) timerStart.onclick = () => sendCmd('geyser-timer', { action: 'start', hours: parseInt(document.getElementById('geyser-hrs').value)||0, minutes: parseInt(document.getElementById('geyser-mins').value)||0 }, 'geyser-result');
+      if (timerStop) timerStop.onclick = () => sendCmd('geyser-timer', { action: 'stop' }, 'geyser-result');
+
+      // Geyser schedule
+      const schedBtn = document.getElementById('geyser-sched-btn');
+      if (schedBtn) schedBtn.onclick = () => {
+        const raw = document.getElementById('geyser-sched').value.trim();
+        const schedules = raw.split(',').map(s => { const [start, end] = s.trim().split('-'); return { start, end }; });
+        sendCmd('geyser-schedule', { schedules }, 'geyser-result');
+      };
+
+      // STS Token
+      const stsBtn = document.getElementById('sts-send-btn');
+      if (stsBtn) stsBtn.onclick = () => {
+        const token = document.getElementById('sts-token').value.trim();
+        if (!/^\d{20}$/.test(token)) { document.getElementById('sts-result').innerHTML = '<div class="alert alert-error" style="margin-top:8px;padding:8px 12px">Token must be exactly 20 digits</div>'; return; }
+        sendCmd('token', { token }, 'sts-result');
+      };
+
+      // Calibration
+      const calAuto = document.getElementById('cal-auto-btn');
+      const calVerify = document.getElementById('cal-verify-btn');
+      if (calAuto) calAuto.onclick = () => sendCmd('calibrate', { action: 'auto' }, 'cal-result');
+      if (calVerify) calVerify.onclick = () => sendCmd('calibrate', { action: 'verify' }, 'cal-result');
+
+      // Net Metering
+      const nmBtn = document.getElementById('nm-send-btn');
+      if (nmBtn) nmBtn.onclick = () => {
+        const mode = document.getElementById('nm-mode').value;
+        const feed_in_rate = parseFloat(document.getElementById('nm-rate').value) || undefined;
+        sendCmd('net-metering-mode', { mode, feed_in_rate }, 'nm-result');
+      };
+
+      // Billing Mode
+      const billPre = document.getElementById('bill-prepaid-btn');
+      const billPost = document.getElementById('bill-postpaid-btn');
+      if (billPre) billPre.onclick = () => sendCmd('billing-mode', { mode: 'prepaid' }, 'bill-result');
+      if (billPost) billPost.onclick = () => sendCmd('billing-mode', { mode: 'postpaid' }, 'bill-result');
+
+      // TOU Mode
+      const touBtn = document.getElementById('tou-send-btn');
+      if (touBtn) touBtn.onclick = () => sendCmd('tou-mode', { mode: parseInt(document.getElementById('tou-mode-sel').value) }, 'tou-result');
+
+      // Device management
+      document.querySelectorAll('.device-btn').forEach(btn => {
+        btn.onclick = () => sendCmd('device', { action: btn.dataset.action }, 'device-result');
+      });
+
+      // Auth numbers
+      const authAdd = document.getElementById('auth-add-btn');
+      const authRemove = document.getElementById('auth-remove-btn');
+      const authList = document.getElementById('auth-list-btn');
+      if (authAdd) authAdd.onclick = () => { const n = document.getElementById('auth-number').value.trim(); if(!n){return;} sendCmd('auth-numbers', { action: 'add', number: n }, 'auth-result'); };
+      if (authRemove) authRemove.onclick = () => { const n = document.getElementById('auth-number').value.trim(); if(!n){return;} sendCmd('auth-numbers', { action: 'remove', number: n }, 'auth-result'); };
+      if (authList) authList.onclick = () => sendCmd('auth-numbers', { action: 'list' }, 'auth-result');
+
+      // Commissioning
+      document.querySelectorAll('.comm-btn').forEach(btn => {
+        btn.onclick = () => sendCmd('commissioning', { action: btn.dataset.action }, 'comm-result');
+      });
+
+      // Energy test
+      const etestStart = document.getElementById('etest-start-btn');
+      const etestStatus = document.getElementById('etest-status-btn');
+      if (etestStart) etestStart.onclick = () => sendCmd('energy-test', { action: 'start', duration_s: parseInt(document.getElementById('etest-duration').value)||60 }, 'comm-result');
+      if (etestStatus) etestStatus.onclick = () => sendCmd('energy-test', { action: 'status' }, 'comm-result');
+
+      // Raw command
+      const rawBtn = document.getElementById('raw-send-btn');
+      if (rawBtn) rawBtn.onclick = async () => {
+        const input = document.getElementById('raw-cmd').value.trim();
+        try {
+          const payload = JSON.parse(input);
+          const el = document.getElementById('raw-result');
+          el.innerHTML = '<span class="spinner"></span>';
+          const data = await api('/api/cmd/send', { method: 'POST', body: JSON.stringify({ drn: mgmtDrn, payload }) });
+          el.innerHTML = `<div class="alert alert-success" style="margin-top:8px;padding:8px 12px">Published to ${data.topic}</div>`;
+        } catch (err) {
+          document.getElementById('raw-result').innerHTML = `<div class="alert alert-error" style="margin-top:8px;padding:8px 12px">${err.message || 'Invalid JSON'}</div>`;
+        }
+      };
+
+      if (mgmtDrn) startAckPolling();
     }
 
     // ─── Init ───
