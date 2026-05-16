@@ -412,6 +412,14 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h6l3-9 3 18 3-9h5"/></svg>
                 Calibration
               </div>
+              <div class="sidebar-item" data-page="netmetering">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                Net Metering
+              </div>
+              <div class="sidebar-item" data-page="commissioning">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+                Commissioning
+              </div>
             </div>
             <div class="sidebar-footer">
               <div style="margin-bottom:8px">Logged in as <strong>${state.user?.username || ''}</strong></div>
@@ -470,6 +478,8 @@
         case 'meters': main.innerHTML = renderMetersPage(); break;
         case 'management': main.innerHTML = renderManagementPage(); bindManagementPage(); break;
         case 'calibration': main.innerHTML = renderCalibrationPage(); bindCalibrationPage(); break;
+        case 'netmetering': main.innerHTML = renderNetMeteringPage(); bindNetMeteringPage(); break;
+        case 'commissioning': main.innerHTML = renderCommissioningPage(); bindCommissioningPage(); break;
       }
     }
 
@@ -1864,6 +1874,890 @@
       };
 
       if (mgmtDrn) startAckPolling();
+    }
+
+    // ─── Net Metering Page ───
+    let nmDrn = '';
+    let nmAcks = [];
+    let nmPollInterval = null;
+    let nmPolarityStatus = { status: 'unknown', message: '' };
+    let nmEnergy = { import_kwh: null, export_kwh: null, net_kwh: null };
+    let nmLive = { voltage: null, current: null, power: null, pf: null, direction: 'IDLE' };
+    let nmHourly = [];
+    let nmDaily = [];
+
+    function nmSendCmd(endpoint, body, resultId) {
+      const el = document.getElementById(resultId);
+      if (el) el.innerHTML = '<span style="color:#fbbf24">Sending...</span>';
+      api(`/api/cmd/${endpoint}`, { method: 'POST', body: JSON.stringify({ drn: nmDrn, ...body }) })
+        .then(d => { if (el) el.innerHTML = `<span style="color:#4ade80">Sent</span>`; })
+        .catch(e => { if (el) el.innerHTML = `<span style="color:#f87171">${e.message}</span>`; });
+    }
+
+    function startNmPolling() {
+      stopNmPolling();
+      if (!nmDrn) return;
+      nmPollInterval = setInterval(async () => {
+        try {
+          const data = await api(`/api/cmd/acks/${nmDrn}`);
+          const acks = data.acks || {};
+          for (const key of Object.keys(acks)) {
+            const a = acks[key];
+            const p = a.payload || a;
+            if (p.type === 'polarity') {
+              nmPolarityStatus = { status: p.status || 'unknown', message: p.message || '' };
+              updateNmPolarityUI();
+            } else if (p.type === 'energy_report' || p.type === 'net_energy_report') {
+              nmEnergy = { import_kwh: p.import_kwh ?? nmEnergy.import_kwh, export_kwh: p.export_kwh ?? nmEnergy.export_kwh, net_kwh: p.net_kwh ?? nmEnergy.net_kwh };
+              updateNmEnergyUI();
+            } else if (p.type === 'power_report') {
+              nmLive = { voltage: p.voltage ?? null, current: p.current ?? null, power: p.power ?? null, pf: p.power_factor ?? null, direction: p.direction || 'IDLE' };
+              updateNmLiveUI();
+            } else if (p.type === 'hourly_breakdown') {
+              nmHourly = p.hours || [];
+              updateNmHourlyUI();
+            } else if (p.type === 'daily_trend') {
+              nmDaily = p.days || [];
+              updateNmDailyUI();
+            }
+          }
+        } catch {}
+      }, 2000);
+    }
+
+    function stopNmPolling() {
+      if (nmPollInterval) { clearInterval(nmPollInterval); nmPollInterval = null; }
+    }
+
+    function updateNmPolarityUI() {
+      const el = document.getElementById('nm-polarity-result');
+      if (!el) return;
+      const s = nmPolarityStatus.status.toUpperCase();
+      let badgeBg = '#374151', badgeColor = '#9ca3af';
+      if (s === 'NORMAL') { badgeBg = '#065f46'; badgeColor = '#4ade80'; }
+      else if (s === 'REVERSED') { badgeBg = '#7f1d1d'; badgeColor = '#f87171'; }
+      el.innerHTML = `
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+          <span style="font-size:9px;padding:2px 8px;border-radius:4px;text-transform:uppercase;font-weight:700;background:${badgeBg};color:${badgeColor}">${s}</span>
+        </div>
+        <div style="font-size:12px;color:#9ca3af">${nmPolarityStatus.message || 'Polarity check complete'}</div>
+      `;
+    }
+
+    function updateNmEnergyUI() {
+      const setV = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v !== null ? v.toFixed(2) : '---'; };
+      setV('nm-import-val', nmEnergy.import_kwh);
+      setV('nm-export-val', nmEnergy.export_kwh);
+      setV('nm-net-val', nmEnergy.net_kwh);
+    }
+
+    function updateNmLiveUI() {
+      const setV = (id, v, unit) => { const e = document.getElementById(id); if (e) e.textContent = v !== null ? v.toFixed(2) : '---'; };
+      setV('nm-voltage-val', nmLive.voltage);
+      setV('nm-current-val', nmLive.current);
+      setV('nm-power-val', nmLive.power);
+      setV('nm-pf-val', nmLive.pf);
+      const badge = document.getElementById('nm-direction-badge');
+      if (badge) {
+        const dir = nmLive.direction.toUpperCase();
+        let bg = '#374151', col = '#9ca3af';
+        if (dir === 'IMPORTING') { bg = '#7f1d1d'; col = '#f87171'; }
+        else if (dir === 'EXPORTING') { bg = '#065f46'; col = '#4ade80'; }
+        badge.style.background = bg;
+        badge.style.color = col;
+        badge.textContent = dir;
+      }
+    }
+
+    function updateNmHourlyUI() {
+      const el = document.getElementById('nm-hourly-chart');
+      if (!el) return;
+      if (nmHourly.length === 0) { el.innerHTML = '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px">Awaiting data...</div>'; return; }
+      const maxVal = Math.max(...nmHourly.map(h => Math.max(h.import || 0, h.export || 0)), 1);
+      let peakImport = 0, peakExport = 0;
+      nmHourly.forEach(h => { peakImport = Math.max(peakImport, h.import || 0); peakExport = Math.max(peakExport, h.export || 0); });
+      let html = `<div style="display:flex;gap:4px;align-items:flex-end;height:120px;margin-bottom:8px">`;
+      nmHourly.forEach(h => {
+        const impH = ((h.import || 0) / maxVal) * 100;
+        const expH = ((h.export || 0) / maxVal) * 100;
+        html += `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:1px;height:100%;justify-content:flex-end">
+          <div style="width:100%;background:#FF5722;border-radius:2px 2px 0 0;height:${impH}%"></div>
+          <div style="width:100%;background:#4CAF50;border-radius:0 0 2px 2px;height:${expH}%"></div>
+          <div style="font-size:8px;color:#9ca3af;margin-top:2px">${h.hour ?? ''}</div>
+        </div>`;
+      });
+      html += `</div>`;
+      html += `<div style="display:flex;gap:16px;font-size:10px;color:#9ca3af">
+        <span><span style="display:inline-block;width:8px;height:8px;background:#FF5722;border-radius:2px;margin-right:4px"></span>Import</span>
+        <span><span style="display:inline-block;width:8px;height:8px;background:#4CAF50;border-radius:2px;margin-right:4px"></span>Export</span>
+        <span style="margin-left:auto">Peak Import: ${peakImport.toFixed(2)} kWh | Peak Export: ${peakExport.toFixed(2)} kWh</span>
+      </div>`;
+      el.innerHTML = html;
+    }
+
+    function updateNmDailyUI() {
+      const el = document.getElementById('nm-daily-table');
+      if (!el) return;
+      if (nmDaily.length === 0) { el.innerHTML = '<div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px">Awaiting data...</div>'; return; }
+      let html = `<table style="width:100%;font-size:12px;border-collapse:collapse">
+        <thead><tr style="color:#60a5fa;text-transform:uppercase;font-size:10px;letter-spacing:0.5px">
+          <th style="text-align:left;padding:6px 8px">Date</th><th style="text-align:right;padding:6px 8px">Import (kWh)</th><th style="text-align:right;padding:6px 8px">Export (kWh)</th><th style="text-align:right;padding:6px 8px">Net</th>
+        </tr></thead><tbody>`;
+      nmDaily.slice(-7).forEach(d => {
+        const net = (d.import || 0) - (d.export || 0);
+        const netColor = net >= 0 ? '#f87171' : '#4ade80';
+        html += `<tr style="border-top:1px solid rgba(255,255,255,0.04)">
+          <td style="padding:6px 8px;color:#e0e0e0">${d.date || '--'}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:monospace;color:#FF5722">${(d.import || 0).toFixed(2)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:monospace;color:#4CAF50">${(d.export || 0).toFixed(2)}</td>
+          <td style="padding:6px 8px;text-align:right;font-family:monospace;font-weight:700;color:${netColor}">${net.toFixed(2)}</td>
+        </tr>`;
+      });
+      html += `</tbody></table>`;
+      el.innerHTML = html;
+    }
+
+    function renderNetMeteringPage() {
+      return `
+        <div class="page-title">Net Metering</div>
+        <div class="page-subtitle">Polarity control, energy import/export monitoring, and solar configuration</div>
+        <div class="divider"></div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="form-row" style="align-items:center">
+            <div class="form-group">
+              <label>Select Meter</label>
+              <select id="nm-drn" style="min-width:300px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                <option value="">-- Select a meter --</option>
+                ${state.meters.map(m => `<option value="${m.drn}" ${m.drn === nmDrn ? 'selected' : ''}>${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''}</option>`).join('')}
+              </select>
+            </div>
+            <div id="nm-status" style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;color:#4ade80;background:rgba(34,197,94,0.1)">Idle</div>
+          </div>
+        </div>
+
+        <div id="nm-panels" style="${nmDrn ? '' : 'opacity:0.4;pointer-events:none'}">
+        <div style="display:flex;gap:16px">
+
+          <!-- LEFT PANEL (30%) -->
+          <div style="width:30%;min-width:260px;flex-shrink:0">
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Polarity Control</div>
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:6px">Polarity Mode:</div>
+              <select id="nm-polarity-mode" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:10px">
+                <option value="0">Normal</option>
+                <option value="1">Reversed</option>
+                <option value="2">Auto</option>
+              </select>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-primary" id="nm-polarity-set" style="width:100%;font-size:12px">Set Mode</button>
+                <button class="btn btn-blue" id="nm-polarity-check" style="width:100%;font-size:12px">Check Polarity</button>
+                <button class="btn" id="nm-polarity-fix" style="width:100%;font-size:12px;background:#f59e0b;color:#000">Fix Polarity (Auto)</button>
+              </div>
+              <div id="nm-polarity-cmd-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Energy Reset</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-blue" id="nm-reset-import" style="width:100%;font-size:12px">Reset Import</button>
+                <button class="btn btn-blue" id="nm-reset-export" style="width:100%;font-size:12px">Reset Export</button>
+                <div style="height:1px;background:rgba(255,255,255,0.06);margin:2px 0"></div>
+                <button class="btn btn-red" id="nm-reset-all" style="width:100%;font-size:12px">Reset All</button>
+              </div>
+              <div id="nm-reset-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Solar Config</div>
+              <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <label style="font-size:12px;color:#e0e0e0;cursor:pointer;display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" id="nm-solar-toggle" style="width:16px;height:16px;accent-color:#4ade80">
+                  Solar Installed
+                </label>
+              </div>
+              <div id="nm-solar-info" style="display:none;font-size:11px;color:#9ca3af;background:#0f1420;border-radius:6px;padding:10px">
+                <div style="margin-bottom:4px"><span style="color:#62b3e0">Status:</span> Enabled</div>
+                <div><span style="color:#62b3e0">Export tracking:</span> Active</div>
+              </div>
+              <div id="nm-solar-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+          </div>
+
+          <!-- RIGHT PANEL (70%) -->
+          <div style="flex:1;min-width:0">
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Polarity Status</div>
+              <div id="nm-polarity-result">
+                <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+                  <span style="font-size:9px;padding:2px 8px;border-radius:4px;text-transform:uppercase;font-weight:700;background:#374151;color:#9ca3af">UNKNOWN</span>
+                </div>
+                <div style="font-size:12px;color:#9ca3af">No polarity check performed yet</div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <div class="card-title" style="margin-bottom:0;color:#60a5fa">Net Energy</div>
+                <button class="btn btn-blue" id="nm-refresh-energy" style="font-size:11px;padding:5px 12px">Refresh</button>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">&#x2193; Import</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-import-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">kWh</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">&#x2191; Export</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-export-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">kWh</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">&#x2194; Net</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-net-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">kWh</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Live Readings</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+                <span style="font-size:10px;color:#9ca3af">Direction:</span>
+                <span id="nm-direction-badge" style="font-size:9px;padding:2px 8px;border-radius:4px;text-transform:uppercase;font-weight:700;background:#374151;color:#9ca3af">IDLE</span>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Voltage</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-voltage-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">V</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Current</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-current-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">A</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Power</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-power-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">W</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Power Factor</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="nm-pf-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;margin-top:4px">%</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Hourly Breakdown</div>
+              <div id="nm-hourly-chart">
+                <div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px">Awaiting data...</div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Daily Trend</div>
+              <div id="nm-daily-table">
+                <div style="color:#9ca3af;font-size:12px;text-align:center;padding:20px">Awaiting data...</div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        </div>
+      `;
+    }
+
+    function bindNetMeteringPage() {
+      const drnSel = document.getElementById('nm-drn');
+      if (drnSel) {
+        drnSel.onchange = () => {
+          nmDrn = drnSel.value;
+          nmPolarityStatus = { status: 'unknown', message: '' };
+          nmEnergy = { import_kwh: null, export_kwh: null, net_kwh: null };
+          nmLive = { voltage: null, current: null, power: null, pf: null, direction: 'IDLE' };
+          nmHourly = [];
+          nmDaily = [];
+          const panels = document.getElementById('nm-panels');
+          if (panels) panels.style = nmDrn ? '' : 'opacity:0.4;pointer-events:none';
+          if (nmDrn) startNmPolling();
+          else stopNmPolling();
+        };
+      }
+
+      // Polarity controls
+      const polSet = document.getElementById('nm-polarity-set');
+      if (polSet) polSet.onclick = () => {
+        const mode = parseInt(document.getElementById('nm-polarity-mode').value);
+        nmSendCmd('polarity', { action: 'set_mode', mode }, 'nm-polarity-cmd-result');
+      };
+      const polCheck = document.getElementById('nm-polarity-check');
+      if (polCheck) polCheck.onclick = () => nmSendCmd('polarity', { action: 'check' }, 'nm-polarity-cmd-result');
+      const polFix = document.getElementById('nm-polarity-fix');
+      if (polFix) polFix.onclick = () => nmSendCmd('polarity', { action: 'fix' }, 'nm-polarity-cmd-result');
+
+      // Energy reset
+      const resetImport = document.getElementById('nm-reset-import');
+      if (resetImport) resetImport.onclick = () => nmSendCmd('energy-reset', { target: 'import' }, 'nm-reset-result');
+      const resetExport = document.getElementById('nm-reset-export');
+      if (resetExport) resetExport.onclick = () => nmSendCmd('energy-reset', { target: 'export' }, 'nm-reset-result');
+      const resetAll = document.getElementById('nm-reset-all');
+      if (resetAll) resetAll.onclick = () => {
+        if (!confirm('Reset all energy counters? This cannot be undone.')) return;
+        nmSendCmd('energy-reset', { target: 'all' }, 'nm-reset-result');
+      };
+
+      // Solar config
+      const solarToggle = document.getElementById('nm-solar-toggle');
+      if (solarToggle) solarToggle.onchange = () => {
+        const enabled = solarToggle.checked;
+        const info = document.getElementById('nm-solar-info');
+        if (info) info.style.display = enabled ? '' : 'none';
+        nmSendCmd('solar-config', { enabled }, 'nm-solar-result');
+      };
+
+      // Refresh energy
+      const refreshBtn = document.getElementById('nm-refresh-energy');
+      if (refreshBtn) refreshBtn.onclick = () => nmSendCmd('device', { action: 'energy_usage_request' }, '');
+
+      if (nmDrn) startNmPolling();
+    }
+
+    // ─── Commissioning Page ───
+    let comDrn = '';
+    let comAcks = [];
+    let comPollInterval = null;
+    let comMeasurement = { voltage: null, current: null, power: null, v_error: null, i_error: null, p_error: null, v_status: 'IDLE', i_status: 'IDLE', p_status: 'IDLE', v_high: null, v_low: null, i_high: null, i_low: null, p_high: null, p_low: null };
+    let comLoad = { status: 'OFF', current: null, result: '', reason: '', progress: 0 };
+    let comEnergyTest = { progress: 0, duration: null, samples: null, result: '', avg_power: null, avg_voltage: null, avg_current: null };
+    let comAutoCalStatus = '';
+    let comLastData = '';
+    let comFullTest = { progress: 0, status: '' };
+
+    function comSendCmd(endpoint, body, resultId) {
+      const el = document.getElementById(resultId);
+      if (el) el.innerHTML = '<span style="color:#fbbf24">Sending...</span>';
+      api(`/api/cmd/${endpoint}`, { method: 'POST', body: JSON.stringify({ drn: comDrn, ...body }) })
+        .then(d => { if (el) el.innerHTML = `<span style="color:#4ade80">Sent</span>`; })
+        .catch(e => { if (el) el.innerHTML = `<span style="color:#f87171">${e.message}</span>`; });
+    }
+
+    function startComPolling() {
+      stopComPolling();
+      if (!comDrn) return;
+      comPollInterval = setInterval(async () => {
+        try {
+          const data = await api(`/api/cmd/acks/${comDrn}`);
+          const acks = data.acks || {};
+          for (const key of Object.keys(acks)) {
+            const a = acks[key];
+            const p = a.payload || a;
+            if (p.type === 'measurement_result') {
+              comMeasurement = { voltage: p.voltage ?? null, current: p.current ?? null, power: p.power ?? null, v_error: p.v_error ?? null, i_error: p.i_error ?? null, p_error: p.p_error ?? null, v_status: p.v_status || 'IDLE', i_status: p.i_status || 'IDLE', p_status: p.p_status || 'IDLE', v_high: p.v_high ?? null, v_low: p.v_low ?? null, i_high: p.i_high ?? null, i_low: p.i_low ?? null, p_high: p.p_high ?? null, p_low: p.p_low ?? null };
+              comAutoCalStatus = p.auto_cal_status || comAutoCalStatus;
+              comLastData = p.timestamp ? new Date(p.timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+              updateComMeasurementUI();
+            } else if (p.type === 'load_test_result') {
+              comLoad = { status: p.load_status || 'OFF', current: p.load_current ?? null, result: p.result || '', reason: p.reason || '', progress: p.progress ?? comLoad.progress };
+              updateComLoadUI();
+            } else if (p.type === 'energy_test_result') {
+              comEnergyTest = { progress: p.progress ?? 0, duration: p.duration ?? null, samples: p.samples ?? null, result: p.result || '', avg_power: p.avg_power ?? null, avg_voltage: p.avg_voltage ?? null, avg_current: p.avg_current ?? null };
+              updateComEnergyTestUI();
+            } else if (p.type === 'full_system_test') {
+              comFullTest = { progress: p.progress ?? 0, status: p.status || '' };
+              updateComFullTestUI();
+            }
+          }
+        } catch {}
+      }, 2000);
+    }
+
+    function stopComPolling() {
+      if (comPollInterval) { clearInterval(comPollInterval); comPollInterval = null; }
+    }
+
+    function updateComMeasurementUI() {
+      const m = comMeasurement;
+      // Auto-cal banner
+      const banner = document.getElementById('com-autocal-banner');
+      if (banner) { banner.style.display = comAutoCalStatus ? '' : 'none'; banner.textContent = comAutoCalStatus; }
+      // Last data
+      const lastEl = document.getElementById('com-last-data');
+      if (lastEl) lastEl.textContent = comLastData ? `Last data: ${comLastData}` : '';
+      // Values
+      const setMetric = (prefix, value, error, status, high, low) => {
+        const valEl = document.getElementById(`com-${prefix}-val`);
+        const errEl = document.getElementById(`com-${prefix}-err`);
+        const barEl = document.getElementById(`com-${prefix}-bar`);
+        const highEl = document.getElementById(`com-${prefix}-high`);
+        const lowEl = document.getElementById(`com-${prefix}-low`);
+        const badgeEl = document.getElementById(`com-${prefix}-badge`);
+        if (valEl) valEl.textContent = value !== null ? value.toFixed(2) : '---';
+        if (errEl) errEl.textContent = error !== null ? error.toFixed(2) + '%' : '--%';
+        if (barEl) {
+          const pct = error !== null ? Math.min(Math.abs(error) * 10, 100) : 0;
+          barEl.style.width = pct + '%';
+          barEl.style.background = status === 'PASS' ? '#4ade80' : status === 'FAIL' ? '#f87171' : '#60a5fa';
+        }
+        if (highEl) highEl.textContent = high !== null ? high.toFixed(2) : '--';
+        if (lowEl) lowEl.textContent = low !== null ? low.toFixed(2) : '--';
+        if (badgeEl) {
+          let bg = '#374151', col = '#9ca3af';
+          if (status === 'PASS') { bg = '#065f46'; col = '#4ade80'; }
+          else if (status === 'FAIL') { bg = '#7f1d1d'; col = '#f87171'; }
+          badgeEl.style.background = bg;
+          badgeEl.style.color = col;
+          badgeEl.textContent = status;
+        }
+      };
+      setMetric('v', m.voltage, m.v_error, m.v_status, m.v_high, m.v_low);
+      setMetric('i', m.current, m.i_error, m.i_status, m.i_high, m.i_low);
+      setMetric('p', m.power, m.p_error, m.p_status, m.p_high, m.p_low);
+    }
+
+    function updateComLoadUI() {
+      const l = comLoad;
+      const progEl = document.getElementById('com-load-progress');
+      if (progEl) progEl.style.width = l.progress + '%';
+      const statusEl = document.getElementById('com-load-status-val');
+      if (statusEl) statusEl.textContent = l.status;
+      const curEl = document.getElementById('com-load-current-val');
+      if (curEl) curEl.textContent = l.current !== null ? l.current.toFixed(2) + ' A' : '---';
+      const resEl = document.getElementById('com-load-result-val');
+      if (resEl) {
+        resEl.textContent = l.result || '---';
+        resEl.style.color = l.result === 'PASS' ? '#4ade80' : l.result === 'FAIL' ? '#f87171' : '#f3f4f6';
+      }
+      const reasonEl = document.getElementById('com-load-reason');
+      if (reasonEl) reasonEl.textContent = l.reason || '';
+    }
+
+    function updateComEnergyTestUI() {
+      const e = comEnergyTest;
+      const progEl = document.getElementById('com-energy-progress');
+      if (progEl) progEl.style.width = e.progress + '%';
+      const setV = (id, v, suffix) => { const el = document.getElementById(id); if (el) el.textContent = v !== null ? v.toFixed(2) + (suffix||'') : '---'; };
+      setV('com-energy-duration', e.duration, 's');
+      setV('com-energy-samples', e.samples, '');
+      const resEl = document.getElementById('com-energy-result-val');
+      if (resEl) { resEl.textContent = e.result || '---'; resEl.style.color = e.result === 'PASS' ? '#4ade80' : e.result === 'FAIL' ? '#f87171' : '#f3f4f6'; }
+      setV('com-energy-avg-power', e.avg_power, ' W');
+      setV('com-energy-avg-voltage', e.avg_voltage, ' V');
+      setV('com-energy-avg-current', e.avg_current, ' A');
+    }
+
+    function updateComFullTestUI() {
+      const f = comFullTest;
+      const progEl = document.getElementById('com-full-progress');
+      if (progEl) progEl.style.width = f.progress + '%';
+      const statusEl = document.getElementById('com-full-status');
+      if (statusEl) statusEl.textContent = f.status || 'Idle';
+    }
+
+    function renderCommissioningPage() {
+      return `
+        <div class="page-title">Commissioning</div>
+        <div class="page-subtitle">Measurement testing, load verification, and meter registration</div>
+        <div class="divider"></div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="form-row" style="align-items:center">
+            <div class="form-group">
+              <label>Select Meter</label>
+              <select id="com-drn" style="min-width:300px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                <option value="">-- Select a meter --</option>
+                ${state.meters.map(m => `<option value="${m.drn}" ${m.drn === comDrn ? 'selected' : ''}>${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''}</option>`).join('')}
+              </select>
+            </div>
+            <div id="com-status" style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;color:#4ade80;background:rgba(34,197,94,0.1)">Idle</div>
+          </div>
+        </div>
+
+        <div id="com-panels" style="${comDrn ? '' : 'opacity:0.4;pointer-events:none'}">
+        <div style="display:flex;gap:16px">
+
+          <!-- LEFT PANEL (30%) -->
+          <div style="width:30%;min-width:260px;flex-shrink:0">
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Measurement Control</div>
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">Reference Voltage:</div>
+              <select id="com-ref-voltage" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:8px">
+                <option value="110">110V</option>
+                <option value="220">220V</option>
+                <option value="230" selected>230V</option>
+                <option value="240">240V</option>
+              </select>
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">Reference Current:</div>
+              <select id="com-ref-current" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:8px">
+                <option value="1">1A</option>
+                <option value="5" selected>5A</option>
+                <option value="10">10A</option>
+                <option value="15">15A</option>
+                <option value="20">20A</option>
+                <option value="30">30A</option>
+              </select>
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">Reference Power:</div>
+              <input type="text" id="com-ref-power" placeholder="Auto (V x I)" readonly style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#9ca3af;font-size:12px;margin-bottom:10px">
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-primary" id="com-measure-start" style="width:100%;font-size:12px">Start Manual Test</button>
+                <button class="btn btn-blue" id="com-measure-autocal" style="width:100%;font-size:12px">Auto-Calibration</button>
+              </div>
+              <div id="com-measure-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Load Testing</div>
+              <div style="display:flex;gap:8px;margin-bottom:8px">
+                <button class="btn btn-primary" id="com-load-on" style="flex:1;font-size:12px">Load ON</button>
+                <button class="btn btn-red" id="com-load-off" style="flex:1;font-size:12px">Load OFF</button>
+              </div>
+              <button class="btn btn-blue" id="com-load-range" style="width:100%;font-size:12px">Current Range Test</button>
+              <div id="com-load-cmd-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">API Testing</div>
+              <button class="btn btn-blue" id="com-api-test" style="width:100%;font-size:12px">Run API Tests</button>
+              <div id="com-api-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Net Metering Test</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-primary" id="com-nm-start" style="width:100%;font-size:12px">Start Net Metering Test</button>
+                <button class="btn" id="com-nm-fix" style="width:100%;font-size:12px;background:#f59e0b;color:#000">Fix Polarity (Auto)</button>
+              </div>
+              <div id="com-nm-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Full System Test</div>
+              <div style="margin-bottom:10px">
+                <div style="height:6px;border-radius:3px;background:#1f2937;overflow:hidden">
+                  <div id="com-full-progress" style="height:100%;width:0%;background:linear-gradient(90deg,#4ade80,#22c55e);border-radius:3px;transition:width 0.3s"></div>
+                </div>
+                <div id="com-full-status" style="font-size:11px;color:#9ca3af;margin-top:4px">Idle</div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-primary" id="com-full-start" style="width:100%;font-size:12px">Start Full System Test</button>
+                <div style="height:1px;background:rgba(255,255,255,0.06);margin:2px 0"></div>
+                <button class="btn" id="com-full-report" style="width:100%;font-size:12px;background:#22c55e;color:#000">Send Commissioning Report</button>
+                <button class="btn btn-red" id="com-full-clear" style="width:100%;font-size:12px">Clear Results</button>
+              </div>
+              <div id="com-full-cmd-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Meter Registration</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Meter DRN:</div>
+                  <input type="text" id="com-reg-drn" readonly style="width:100%;padding:8px;background:#0a0e17;border:1px solid #2d3548;border-radius:6px;color:#9ca3af;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">SIM/IMEI:</div>
+                  <input type="text" id="com-reg-imei" placeholder="Enter SIM or IMEI" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Region:</div>
+                  <select id="com-reg-region" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                    <option value="">-- Select region --</option>
+                    <option value="gauteng">Gauteng</option>
+                    <option value="western_cape">Western Cape</option>
+                    <option value="kwazulu_natal">KwaZulu-Natal</option>
+                    <option value="eastern_cape">Eastern Cape</option>
+                    <option value="free_state">Free State</option>
+                    <option value="limpopo">Limpopo</option>
+                    <option value="mpumalanga">Mpumalanga</option>
+                    <option value="north_west">North West</option>
+                    <option value="northern_cape">Northern Cape</option>
+                  </select>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Sub-Region:</div>
+                  <select id="com-reg-subregion" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                    <option value="">-- Select sub-region --</option>
+                  </select>
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Area:</div>
+                  <input type="text" id="com-reg-area" placeholder="Area name" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">ERF Number:</div>
+                  <input type="text" id="com-reg-erf" placeholder="ERF number" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Owner Name:</div>
+                  <input type="text" id="com-reg-name" placeholder="First name" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Owner Surname:</div>
+                  <input type="text" id="com-reg-surname" placeholder="Surname" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Phone:</div>
+                  <input type="text" id="com-reg-phone" placeholder="+27..." style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Email:</div>
+                  <input type="email" id="com-reg-email" placeholder="email@example.com" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">GPS Coordinates:</div>
+                  <input type="text" id="com-reg-gps" placeholder="-26.2041, 28.0473" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <div>
+                  <div style="font-size:11px;color:#62b3e0;margin-bottom:3px">Street:</div>
+                  <input type="text" id="com-reg-street" placeholder="Street address" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px">
+                </div>
+                <button class="btn btn-primary" id="com-reg-submit" style="width:100%;font-size:12px;margin-top:4px">Register Meter</button>
+              </div>
+              <div id="com-reg-result" style="margin-top:8px;font-size:11px"></div>
+            </div>
+
+          </div>
+
+          <!-- RIGHT PANEL (70%) -->
+          <div style="flex:1;min-width:0">
+
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <div class="card-title" style="margin-bottom:0;color:#60a5fa">Measurement Results</div>
+                <div id="com-last-data" style="font-size:10px;color:#9ca3af"></div>
+              </div>
+              <div id="com-autocal-banner" style="display:none;background:rgba(96,165,250,0.1);border:1px solid rgba(96,165,250,0.3);border-radius:6px;padding:8px 12px;font-size:11px;color:#60a5fa;margin-bottom:12px"></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px;text-align:center">Voltage</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6;text-align:center" id="com-v-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;text-align:center;margin:4px 0">V</div>
+                  <div style="font-size:11px;color:#9ca3af;text-align:center;margin-bottom:6px">Error: <span id="com-v-err">--%</span></div>
+                  <div style="height:6px;border-radius:3px;background:#1f2937;overflow:hidden;margin-bottom:6px">
+                    <div id="com-v-bar" style="height:100%;width:0%;background:#60a5fa;border-radius:3px;transition:width 0.3s"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
+                    <span>Lo: <span id="com-v-low">--</span></span>
+                    <span>Hi: <span id="com-v-high">--</span></span>
+                  </div>
+                  <div style="text-align:center;margin-top:6px">
+                    <span id="com-v-badge" style="font-size:9px;padding:2px 8px;border-radius:4px;text-transform:uppercase;font-weight:700;background:#374151;color:#9ca3af">IDLE</span>
+                  </div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px;text-align:center">Current</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6;text-align:center" id="com-i-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;text-align:center;margin:4px 0">A</div>
+                  <div style="font-size:11px;color:#9ca3af;text-align:center;margin-bottom:6px">Error: <span id="com-i-err">--%</span></div>
+                  <div style="height:6px;border-radius:3px;background:#1f2937;overflow:hidden;margin-bottom:6px">
+                    <div id="com-i-bar" style="height:100%;width:0%;background:#60a5fa;border-radius:3px;transition:width 0.3s"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
+                    <span>Lo: <span id="com-i-low">--</span></span>
+                    <span>Hi: <span id="com-i-high">--</span></span>
+                  </div>
+                  <div style="text-align:center;margin-top:6px">
+                    <span id="com-i-badge" style="font-size:9px;padding:2px 8px;border-radius:4px;text-transform:uppercase;font-weight:700;background:#374151;color:#9ca3af">IDLE</span>
+                  </div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px;text-align:center">Power</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6;text-align:center" id="com-p-val">---</div>
+                  <div style="font-size:10px;color:#9ca3af;text-align:center;margin:4px 0">W</div>
+                  <div style="font-size:11px;color:#9ca3af;text-align:center;margin-bottom:6px">Error: <span id="com-p-err">--%</span></div>
+                  <div style="height:6px;border-radius:3px;background:#1f2937;overflow:hidden;margin-bottom:6px">
+                    <div id="com-p-bar" style="height:100%;width:0%;background:#60a5fa;border-radius:3px;transition:width 0.3s"></div>
+                  </div>
+                  <div style="display:flex;justify-content:space-between;font-size:9px;color:#9ca3af">
+                    <span>Lo: <span id="com-p-low">--</span></span>
+                    <span>Hi: <span id="com-p-high">--</span></span>
+                  </div>
+                  <div style="text-align:center;margin-top:6px">
+                    <span id="com-p-badge" style="font-size:9px;padding:2px 8px;border-radius:4px;text-transform:uppercase;font-weight:700;background:#374151;color:#9ca3af">IDLE</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Load Test Results</div>
+              <div style="height:6px;border-radius:3px;background:#1f2937;overflow:hidden;margin-bottom:12px">
+                <div id="com-load-progress" style="height:100%;width:0%;background:linear-gradient(90deg,#60a5fa,#3b82f6);border-radius:3px;transition:width 0.3s"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Load Status</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-load-status-val">OFF</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Load Current</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-load-current-val">---</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Test Result</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-load-result-val">---</div>
+                </div>
+              </div>
+              <div id="com-load-reason" style="font-size:11px;color:#9ca3af"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Energy Accounting Test</div>
+              <div style="height:6px;border-radius:3px;background:#1f2937;overflow:hidden;margin-bottom:12px">
+                <div id="com-energy-progress" style="height:100%;width:0%;background:linear-gradient(90deg,#4ade80,#22c55e);border-radius:3px;transition:width 0.3s"></div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:12px">
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Duration</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-energy-duration">---</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Samples</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-energy-samples">---</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Result</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-energy-result-val">---</div>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Avg Power</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-energy-avg-power">---</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Avg Voltage</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-energy-avg-voltage">---</div>
+                </div>
+                <div style="background:#1e2538;border:1px solid rgba(255,255,255,0.06);border-radius:8px;padding:14px;text-align:center">
+                  <div style="background:rgba(96,165,250,0.08);padding:4px 8px;border-radius:4px;font-size:11px;text-transform:uppercase;letter-spacing:0.5px;color:#60a5fa;margin-bottom:8px">Avg Current</div>
+                  <div style="font-family:monospace;font-size:20px;font-weight:bold;color:#f3f4f6" id="com-energy-avg-current">---</div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </div>
+        </div>
+      `;
+    }
+
+    function bindCommissioningPage() {
+      const drnSel = document.getElementById('com-drn');
+      if (drnSel) {
+        drnSel.onchange = () => {
+          comDrn = drnSel.value;
+          comMeasurement = { voltage: null, current: null, power: null, v_error: null, i_error: null, p_error: null, v_status: 'IDLE', i_status: 'IDLE', p_status: 'IDLE', v_high: null, v_low: null, i_high: null, i_low: null, p_high: null, p_low: null };
+          comLoad = { status: 'OFF', current: null, result: '', reason: '', progress: 0 };
+          comEnergyTest = { progress: 0, duration: null, samples: null, result: '', avg_power: null, avg_voltage: null, avg_current: null };
+          comAutoCalStatus = '';
+          comLastData = '';
+          comFullTest = { progress: 0, status: '' };
+          const panels = document.getElementById('com-panels');
+          if (panels) panels.style = comDrn ? '' : 'opacity:0.4;pointer-events:none';
+          // Set DRN in registration field
+          const regDrn = document.getElementById('com-reg-drn');
+          if (regDrn) regDrn.value = comDrn;
+          if (comDrn) startComPolling();
+          else stopComPolling();
+        };
+      }
+
+      // Update ref power display when voltage/current change
+      const updateRefPower = () => {
+        const v = parseFloat(document.getElementById('com-ref-voltage').value) || 0;
+        const i = parseFloat(document.getElementById('com-ref-current').value) || 0;
+        const pEl = document.getElementById('com-ref-power');
+        if (pEl) pEl.value = (v * i) + 'W (auto)';
+      };
+      const refV = document.getElementById('com-ref-voltage');
+      const refI = document.getElementById('com-ref-current');
+      if (refV) refV.onchange = updateRefPower;
+      if (refI) refI.onchange = updateRefPower;
+      updateRefPower();
+
+      // Measurement controls
+      const measureStart = document.getElementById('com-measure-start');
+      if (measureStart) measureStart.onclick = () => {
+        const ref_voltage = parseFloat(document.getElementById('com-ref-voltage').value);
+        const ref_current = parseFloat(document.getElementById('com-ref-current').value);
+        const ref_power = ref_voltage * ref_current;
+        comSendCmd('measurement-test', { action: 'start', ref_voltage, ref_current, ref_power }, 'com-measure-result');
+      };
+      const measureAuto = document.getElementById('com-measure-autocal');
+      if (measureAuto) measureAuto.onclick = () => {
+        const ref_voltage = parseFloat(document.getElementById('com-ref-voltage').value);
+        const ref_current = parseFloat(document.getElementById('com-ref-current').value);
+        const ref_power = ref_voltage * ref_current;
+        comSendCmd('measurement-test', { action: 'auto_calibration', ref_voltage, ref_current, ref_power }, 'com-measure-result');
+      };
+
+      // Load testing
+      const loadOn = document.getElementById('com-load-on');
+      if (loadOn) loadOn.onclick = () => comSendCmd('load-test', { action: 'on' }, 'com-load-cmd-result');
+      const loadOff = document.getElementById('com-load-off');
+      if (loadOff) loadOff.onclick = () => comSendCmd('load-test', { action: 'off' }, 'com-load-cmd-result');
+      const loadRange = document.getElementById('com-load-range');
+      if (loadRange) loadRange.onclick = () => comSendCmd('load-test', { action: 'range_test' }, 'com-load-cmd-result');
+
+      // API testing
+      const apiTest = document.getElementById('com-api-test');
+      if (apiTest) apiTest.onclick = () => comSendCmd('device', { action: 'energy_usage_request' }, 'com-api-result');
+
+      // Net metering test
+      const nmStart = document.getElementById('com-nm-start');
+      if (nmStart) nmStart.onclick = () => comSendCmd('net-metering-test', { action: 'start' }, 'com-nm-result');
+      const nmFix = document.getElementById('com-nm-fix');
+      if (nmFix) nmFix.onclick = () => comSendCmd('net-metering-test', { action: 'fix_polarity' }, 'com-nm-result');
+
+      // Full system test
+      const fullStart = document.getElementById('com-full-start');
+      if (fullStart) fullStart.onclick = () => comSendCmd('full-system-test', { action: 'start' }, 'com-full-cmd-result');
+      const fullReport = document.getElementById('com-full-report');
+      if (fullReport) fullReport.onclick = () => comSendCmd('full-system-test', { action: 'send_report' }, 'com-full-cmd-result');
+      const fullClear = document.getElementById('com-full-clear');
+      if (fullClear) fullClear.onclick = () => {
+        comMeasurement = { voltage: null, current: null, power: null, v_error: null, i_error: null, p_error: null, v_status: 'IDLE', i_status: 'IDLE', p_status: 'IDLE', v_high: null, v_low: null, i_high: null, i_low: null, p_high: null, p_low: null };
+        comLoad = { status: 'OFF', current: null, result: '', reason: '', progress: 0 };
+        comEnergyTest = { progress: 0, duration: null, samples: null, result: '', avg_power: null, avg_voltage: null, avg_current: null };
+        comFullTest = { progress: 0, status: '' };
+        updateComMeasurementUI();
+        updateComLoadUI();
+        updateComEnergyTestUI();
+        updateComFullTestUI();
+        comSendCmd('full-system-test', { action: 'clear' }, 'com-full-cmd-result');
+      };
+
+      // Meter registration
+      const regSubmit = document.getElementById('com-reg-submit');
+      if (regSubmit) regSubmit.onclick = () => {
+        const body = {
+          region: document.getElementById('com-reg-region').value,
+          sub_region: document.getElementById('com-reg-subregion').value,
+          area: document.getElementById('com-reg-area').value,
+          erf: document.getElementById('com-reg-erf').value,
+          owner_name: document.getElementById('com-reg-name').value,
+          owner_surname: document.getElementById('com-reg-surname').value,
+          phone: document.getElementById('com-reg-phone').value,
+          email: document.getElementById('com-reg-email').value,
+          gps: document.getElementById('com-reg-gps').value,
+          street: document.getElementById('com-reg-street').value,
+          imei: document.getElementById('com-reg-imei').value
+        };
+        comSendCmd('register-meter', body, 'com-reg-result');
+      };
+
+      // Set initial DRN in registration field
+      const regDrn = document.getElementById('com-reg-drn');
+      if (regDrn) regDrn.value = comDrn;
+
+      if (comDrn) startComPolling();
     }
 
     // ─── Init ───

@@ -1034,6 +1034,96 @@ app.post('/api/cmd/tou-mode', auth, (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════
+// Net Metering Page Commands
+// ═══════════════════════════════════════════════════════════
+
+app.post('/api/cmd/polarity', auth, (req, res) => {
+  const { drn, action, mode } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['check', 'fix', 'set_mode'].includes(action)) return res.status(400).json({ error: 'action must be check, fix, or set_mode' });
+  const cmd = { type: 'polarity', action };
+  if (action === 'set_mode' && mode !== undefined) cmd.mode = mode;
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/energy-reset', auth, (req, res) => {
+  const { drn, target } = req.body;
+  if (!drn || !target) return res.status(400).json({ error: 'Missing drn or target' });
+  if (!['import', 'export', 'all'].includes(target)) return res.status(400).json({ error: 'target must be import, export, or all' });
+  const cmd = { type: 'energy_reset', target };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/solar-config', auth, (req, res) => {
+  const { drn, enabled } = req.body;
+  if (!drn || enabled === undefined) return res.status(400).json({ error: 'Missing drn or enabled' });
+  const cmd = { type: 'solar_config', enabled: !!enabled };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+// ═══════════════════════════════════════════════════════════
+// Commissioning Page Commands
+// ═══════════════════════════════════════════════════════════
+
+app.post('/api/cmd/measurement-test', auth, (req, res) => {
+  const { drn, action, ref_voltage, ref_current, ref_power } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['start', 'stop', 'auto_calibration'].includes(action)) return res.status(400).json({ error: 'action must be start, stop, or auto_calibration' });
+  const cmd = { type: 'measurement_test', action };
+  if (ref_voltage !== undefined) cmd.ref_voltage = ref_voltage;
+  if (ref_current !== undefined) cmd.ref_current = ref_current;
+  if (ref_power !== undefined) cmd.ref_power = ref_power;
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/load-test', auth, (req, res) => {
+  const { drn, action } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['on', 'off', 'range_test'].includes(action)) return res.status(400).json({ error: 'action must be on, off, or range_test' });
+  const cmd = { type: 'load_test', action };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/register-meter', auth, (req, res) => {
+  const { drn, region, sub_region, area, erf, owner_name, owner_surname, phone, email, gps, street } = req.body;
+  if (!drn) return res.status(400).json({ error: 'Missing drn' });
+  const cmd = { type: 'register_meter', region, sub_region, area, erf, owner_name, owner_surname, phone, email, gps, street };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/full-system-test', auth, (req, res) => {
+  const { drn, action } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['start', 'stop', 'status', 'send_report', 'clear'].includes(action)) return res.status(400).json({ error: 'action must be start, stop, status, send_report, or clear' });
+  const cmd = { type: 'full_system_test', action };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+app.post('/api/cmd/net-metering-test', auth, (req, res) => {
+  const { drn, action } = req.body;
+  if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
+  if (!['start', 'fix_polarity'].includes(action)) return res.status(400).json({ error: 'action must be start or fix_polarity' });
+  const cmd = { type: 'net_metering_test', action };
+  const client = getMqtt();
+  client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+  res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+// ═══════════════════════════════════════════════════════════
 // Multer error handler — return JSON errors instead of HTML
 // ═══════════════════════════════════════════════════════════
 app.use((err, req, res, next) => {
