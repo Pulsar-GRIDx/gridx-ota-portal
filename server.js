@@ -941,10 +941,17 @@ app.post('/api/cmd/token', auth, (req, res) => {
 });
 
 app.post('/api/cmd/calibrate', auth, (req, res) => {
-  const { drn, action } = req.body;
+  const { drn, action, aigain, avgain, save } = req.body;
   if (!drn || !action) return res.status(400).json({ error: 'Missing drn or action' });
-  if (!['auto', 'verify'].includes(action)) return res.status(400).json({ error: 'action must be auto or verify' });
+  const validActions = ['auto', 'verify', 'exercise', 'voltage', 'current', 'read_gains', 'write_gains', 'reset_defaults'];
+  if (!validActions.includes(action)) return res.status(400).json({ error: `action must be one of: ${validActions.join(', ')}` });
   const cmd = { type: 'calibrate', action };
+  if (action === 'write_gains') {
+    if (aigain === undefined || avgain === undefined) return res.status(400).json({ error: 'write_gains requires aigain and avgain' });
+    cmd.aigain = aigain;
+    cmd.avgain = avgain;
+    cmd.save = !!save;
+  }
   const client = getMqtt();
   client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
   res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });

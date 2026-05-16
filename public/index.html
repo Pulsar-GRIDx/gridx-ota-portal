@@ -408,6 +408,10 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15 1.65 1.65 0 003 14.08V14a2 2 0 014 0v.09a1.65 1.65 0 001 1.51zM21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
                 Meter Config
               </div>
+              <div class="sidebar-item" data-page="calibration">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12h6l3-9 3 18 3-9h5"/></svg>
+                Calibration
+              </div>
             </div>
             <div class="sidebar-footer">
               <div style="margin-bottom:8px">Logged in as <strong>${state.user?.username || ''}</strong></div>
@@ -465,6 +469,7 @@
         case 'nextion': main.innerHTML = renderNextionPage(); bindNextionPage(); break;
         case 'meters': main.innerHTML = renderMetersPage(); break;
         case 'management': main.innerHTML = renderManagementPage(); bindManagementPage(); break;
+        case 'calibration': main.innerHTML = renderCalibrationPage(); bindCalibrationPage(); break;
       }
     }
 
@@ -1117,6 +1122,348 @@
           `}
         </div>
       `;
+    }
+
+    // ─── Calibration Page ───
+    let calDrn = '';
+    let calGains = { aigain: null, avgain: null, aicc: null, avcc: null, vrms_mv: null, irms_ma: null };
+    let calProgress = null;
+    let calLog = ['Ready for calibration.'];
+    let calPollInterval = null;
+    const GAIN_SCALE = 134217728.0; // 2^27
+
+    function gainToFactor(reg) { return 1.0 + reg / GAIN_SCALE; }
+    function factorToGain(f) { return Math.round((f - 1.0) * GAIN_SCALE); }
+
+    function calAddLog(msg) {
+      const t = new Date().toLocaleTimeString();
+      calLog.push(`[${t}] ${msg}`);
+      if (calLog.length > 50) calLog.shift();
+      const el = document.getElementById('cal-log-text');
+      if (el) { el.textContent = calLog.join('\n'); el.scrollTop = el.scrollHeight; }
+    }
+
+    function startCalPolling() {
+      stopCalPolling();
+      if (!calDrn) return;
+      calPollInterval = setInterval(async () => {
+        try {
+          const data = await api(`/api/cmd/acks/${calDrn}`);
+          const acks = data.acks || {};
+          for (const key of Object.keys(acks)) {
+            const a = acks[key];
+            const p = a.payload || a;
+            if (p.type === 'cal_progress') {
+              calProgress = p;
+              updateCalProgressUI();
+            } else if (p.type === 'gains_report') {
+              calGains = p;
+              updateGainsUI();
+              calAddLog(`Gains received: AIGAIN=0x${(p.aigain>>>0).toString(16).toUpperCase().padStart(8,'0')} AVGAIN=0x${(p.avgain>>>0).toString(16).toUpperCase().padStart(8,'0')}`);
+            } else if (p.type === 'calibrate') {
+              calAddLog(`${p.detail || p.status}`);
+            }
+          }
+        } catch {}
+      }, 1500);
+    }
+
+    function stopCalPolling() {
+      if (calPollInterval) { clearInterval(calPollInterval); calPollInterval = null; }
+    }
+
+    function updateGainsUI() {
+      const g = calGains;
+      const setT = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+      setT('g-aigain', g.aigain !== null ? '0x' + (g.aigain>>>0).toString(16).toUpperCase().padStart(8,'0') : '--');
+      setT('g-avgain', g.avgain !== null ? '0x' + (g.avgain>>>0).toString(16).toUpperCase().padStart(8,'0') : '--');
+      setT('g-ifactor', g.aigain !== null ? gainToFactor(g.aigain).toFixed(6) : '--');
+      setT('g-vfactor', g.avgain !== null ? gainToFactor(g.avgain).toFixed(6) : '--');
+      setT('g-aicc', g.aicc !== null ? g.aicc.toFixed(4) : '--');
+      setT('g-avcc', g.avcc !== null ? g.avcc.toFixed(4) : '--');
+      setT('g-voltage', g.vrms_mv !== null ? (g.vrms_mv / 1000).toFixed(1) + ' V' : '--');
+      setT('g-current', g.irms_ma !== null ? (g.irms_ma / 1000).toFixed(3) + ' A' : '--');
+    }
+
+    function updateCalProgressUI() {
+      const p = calProgress;
+      if (!p) return;
+      const setT = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+      setT('cp-start-aicc', p.start_aicc?.toFixed(4) || '--');
+      setT('cp-cur-aicc', p.aicc?.toFixed(4) || '--');
+      setT('cp-unc-i', p.unc_i || '--');
+      setT('cp-err-i', p.err_i !== undefined ? p.err_i.toFixed(2) + '%' : '--');
+      setT('cp-start-avcc', p.start_avcc?.toFixed(4) || '--');
+      setT('cp-cur-avcc', p.avcc?.toFixed(4) || '--');
+      setT('cp-unc-v', p.unc_v || '--');
+      setT('cp-err-v', p.err_v !== undefined ? p.err_v.toFixed(2) + '%' : '--');
+      // Progress bars (convergence: ~2050 = done, start at ~32000)
+      const pctI = p.unc_i ? Math.min(100, Math.max(0, ((32000 - Math.abs(p.unc_i)) / 30000) * 100)) : 0;
+      const pctV = p.unc_v ? Math.min(100, Math.max(0, ((32000 - Math.abs(p.unc_v)) / 30000) * 100)) : 0;
+      const barI = document.getElementById('cp-bar-i');
+      const barV = document.getElementById('cp-bar-v');
+      if (barI) barI.style.width = pctI + '%';
+      if (barV) barV.style.width = pctV + '%';
+      if (p.done) {
+        if (barI) barI.classList.add('complete');
+        if (barV) barV.classList.add('complete');
+      }
+      setT('cp-vrms', p.vrms_mv ? (p.vrms_mv / 1000).toFixed(1) + ' mV' : '--');
+      setT('cp-irms', p.irms_ma ? (p.irms_ma / 1000).toFixed(1) + ' mA' : '--');
+      setT('cp-ai-wav', p.ai_wav || '--');
+      setT('cp-av-wav', p.av_wav || '--');
+      const statusEl = document.getElementById('cal-status');
+      if (statusEl) {
+        statusEl.textContent = p.done ? 'Calibration Complete' : 'Calibrating...';
+        statusEl.style.color = p.done ? '#4ade80' : '#fb923c';
+        statusEl.style.background = p.done ? 'rgba(34,197,94,0.1)' : 'rgba(251,146,60,0.1)';
+      }
+    }
+
+    async function calCmd(action, extra = {}, logMsg) {
+      if (!calDrn) return;
+      calAddLog(logMsg || `Sending: ${action}`);
+      try {
+        await api('/api/cmd/calibrate', { method: 'POST', body: JSON.stringify({ drn: calDrn, action, ...extra }) });
+      } catch (err) { calAddLog(`Error: ${err.message}`); }
+    }
+
+    function renderCalibrationPage() {
+      return `
+        <div class="page-title">Meter Calibration</div>
+        <div class="page-subtitle">ADE gain calibration, reference verification, and live metering data</div>
+        <div class="divider"></div>
+
+        <div class="card" style="margin-bottom:16px">
+          <div class="form-row" style="align-items:center">
+            <div class="form-group">
+              <label>Select Meter</label>
+              <select id="cal-drn" style="min-width:300px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
+                <option value="">-- Select a meter --</option>
+                ${state.meters.map(m => `<option value="${m.drn}" ${m.drn === calDrn ? 'selected' : ''}>${m.drn} ${m.customer ? '(' + m.customer.trim() + ')' : ''}</option>`).join('')}
+              </select>
+            </div>
+            <div id="cal-status" style="padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600;color:#4ade80;background:rgba(34,197,94,0.1)">Idle</div>
+          </div>
+        </div>
+
+        <div id="cal-panels" style="${calDrn ? '' : 'opacity:0.4;pointer-events:none'}">
+        <div style="display:flex;gap:16px">
+
+          <!-- LEFT PANEL (30%) -->
+          <div style="width:30%;min-width:260px;flex-shrink:0">
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Auto Calibration</div>
+              <div style="display:flex;flex-direction:column;gap:8px">
+                <button class="btn btn-blue cal-action" data-action="voltage" style="width:100%;font-size:12px">Calibrate Voltage</button>
+                <button class="btn btn-blue cal-action" data-action="current" style="width:100%;font-size:12px">Calibrate Current</button>
+                <button class="btn btn-primary cal-action" data-action="auto" style="width:100%;font-size:12px;background:#202d78">Full Calibration</button>
+                <div style="height:1px;background:rgba(255,255,255,0.06);margin:4px 0"></div>
+                <button class="btn cal-action" data-action="reset_defaults" style="width:100%;font-size:12px;background:#f59e0b;color:#000">Reset to Defaults</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Manual Gain Entry</div>
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">Current Gain (AIGAIN):</div>
+              <input type="text" id="man-aigain" placeholder="e.g. 1.050000 or 0x001D98B8" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:8px">
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">Voltage Gain (AVGAIN):</div>
+              <input type="text" id="man-avgain" placeholder="e.g. 1.050000 or 0x001D98B8" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:10px">
+              <div style="display:flex;gap:6px">
+                <button class="btn" id="man-apply-btn" style="flex:1;font-size:11px;background:#22c55e;color:#000">Apply (No Save)</button>
+                <button class="btn" id="man-save-btn" style="flex:1;font-size:11px;background:#ea580c;color:#fff">Apply + Save</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Reference Calibration</div>
+              <div style="font-size:10px;color:#62b3e0;margin-bottom:8px">Enter true values from certified instrument:</div>
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">True Voltage (V):</div>
+              <input type="number" id="ref-voltage" step="0.1" placeholder="e.g. 230.0" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:8px">
+              <div style="font-size:11px;color:#62b3e0;margin-bottom:4px">True Current (A):</div>
+              <input type="number" id="ref-current" step="0.001" placeholder="e.g. 5.0" style="width:100%;padding:8px;background:#0f1420;border:1px solid #2d3548;border-radius:6px;color:#e0e0e0;font-size:12px;margin-bottom:10px">
+              <button class="btn" id="ref-calc-btn" style="width:100%;font-size:12px;background:#7c3aed;color:#fff">Calculate New Gains</button>
+            </div>
+
+          </div>
+
+          <!-- RIGHT PANEL (70%) -->
+          <div style="flex:1;min-width:0">
+
+            <div class="card">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <div class="card-title" style="margin-bottom:0;color:#60a5fa">Current Gain Settings</div>
+                <button class="btn btn-blue" id="read-gains-btn" style="font-size:12px;padding:6px 16px">Read</button>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:13px">
+                <div style="color:#62b3e0">AIGAIN:</div><div style="font-family:monospace;font-weight:700;text-align:right" id="g-aigain">--</div>
+                <div style="color:#62b3e0">AVGAIN:</div><div style="font-family:monospace;font-weight:700;text-align:right" id="g-avgain">--</div>
+                <div style="color:#62b3e0">I Gain Factor:</div><div style="text-align:right" id="g-ifactor">--</div>
+                <div style="color:#62b3e0">V Gain Factor:</div><div style="text-align:right" id="g-vfactor">--</div>
+                <div style="color:#62b3e0">Stored AICC:</div><div style="text-align:right" id="g-aicc">--</div>
+                <div style="color:#62b3e0">Stored AVCC:</div><div style="text-align:right" id="g-avcc">--</div>
+              </div>
+              <div style="height:1px;background:rgba(255,255,255,0.06);margin:12px 0"></div>
+              <div style="font-size:13px;font-weight:600;color:#9ca3af;margin-bottom:8px">Live Meter Readings</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:13px">
+                <div style="color:#62b3e0">Voltage (V):</div><div style="font-size:16px;font-weight:700;color:#3b82f6;text-align:right" id="g-voltage">--</div>
+                <div style="color:#62b3e0">Current (A):</div><div style="font-size:16px;font-weight:700;color:#3b82f6;text-align:right" id="g-current">--</div>
+              </div>
+            </div>
+
+            <div class="card" id="gain-preview-card" style="display:none">
+              <div class="card-title" style="color:#7c3aed">Gain Preview</div>
+              <table style="width:100%;font-size:12px">
+                <thead><tr><th></th><th style="text-align:center">Existing</th><th style="text-align:center;color:#7c3aed">Recommended</th></tr></thead>
+                <tbody>
+                  <tr><td style="color:#62b3e0">AIGAIN</td><td style="text-align:center;font-family:monospace" id="pv-old-ai">--</td><td style="text-align:center;font-family:monospace;color:#7c3aed;font-weight:700" id="pv-new-ai">--</td></tr>
+                  <tr><td style="color:#62b3e0">AVGAIN</td><td style="text-align:center;font-family:monospace" id="pv-old-av">--</td><td style="text-align:center;font-family:monospace;color:#7c3aed;font-weight:700" id="pv-new-av">--</td></tr>
+                  <tr><td style="color:#62b3e0">V corr.</td><td style="text-align:center" id="pv-old-v">--</td><td style="text-align:center;color:#7c3aed;font-weight:700" id="pv-new-v">--</td></tr>
+                  <tr><td style="color:#62b3e0">I corr.</td><td style="text-align:center" id="pv-old-i">--</td><td style="text-align:center;color:#7c3aed;font-weight:700" id="pv-new-i">--</td></tr>
+                </tbody>
+              </table>
+              <div style="display:flex;gap:8px;margin-top:12px">
+                <button class="btn" id="pv-apply-btn" style="flex:1;font-size:12px;background:#22c55e;color:#000">Apply</button>
+                <button class="btn" id="pv-save-btn" style="flex:1;font-size:12px;background:#ea580c;color:#fff">Apply + Save</button>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Auto Calibration Progress</div>
+              <div style="font-size:13px;font-weight:600;color:#9ca3af;margin-bottom:6px">Current Channel (AICC)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;font-size:12px;margin-bottom:4px">
+                <div><span style="color:#62b3e0">Start:</span> <span id="cp-start-aicc">--</span></div>
+                <div><span style="color:#62b3e0">Curr:</span> <span style="font-weight:700" id="cp-cur-aicc">--</span></div>
+                <div><span style="color:#62b3e0">Unc:</span> <span id="cp-unc-i">--</span></div>
+                <div><span style="color:#62b3e0">Err:</span> <span style="font-weight:700" id="cp-err-i">--</span></div>
+              </div>
+              <div class="progress-container"><div class="progress-bar" id="cp-bar-i" style="width:0%"></div></div>
+
+              <div style="font-size:13px;font-weight:600;color:#9ca3af;margin:12px 0 6px">Voltage Channel (AVCC)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px;font-size:12px;margin-bottom:4px">
+                <div><span style="color:#62b3e0">Start:</span> <span id="cp-start-avcc">--</span></div>
+                <div><span style="color:#62b3e0">Curr:</span> <span style="font-weight:700" id="cp-cur-avcc">--</span></div>
+                <div><span style="color:#62b3e0">Unc:</span> <span id="cp-unc-v">--</span></div>
+                <div><span style="color:#62b3e0">Err:</span> <span style="font-weight:700" id="cp-err-v">--</span></div>
+              </div>
+              <div class="progress-container"><div class="progress-bar" id="cp-bar-v" style="width:0%"></div></div>
+
+              <div style="height:1px;background:rgba(255,255,255,0.06);margin:12px 0"></div>
+              <div style="font-size:13px;font-weight:600;color:#9ca3af;margin-bottom:4px">Shunt Measurements (ADC Input)</div>
+              <div style="font-size:10px;color:#62b3e0;margin-bottom:6px">RMS values at shunt resistor inputs, after gain correction</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:13px">
+                <div><span style="color:#62b3e0">V (shunt):</span> <span style="font-weight:700;color:#3b82f6" id="cp-vrms">--</span></div>
+                <div><span style="color:#62b3e0">I (shunt):</span> <span style="font-weight:700;color:#3b82f6" id="cp-irms">--</span></div>
+              </div>
+
+              <div style="height:1px;background:rgba(255,255,255,0.06);margin:12px 0"></div>
+              <div style="font-size:13px;font-weight:600;color:#9ca3af;margin-bottom:4px">Raw ADC Waveform (Instantaneous)</div>
+              <div style="font-size:10px;color:#62b3e0;margin-bottom:6px">Raw ADC codes (no gain/RMS applied)</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;font-size:13px">
+                <div><span style="color:#62b3e0">IA:</span> <span style="font-weight:700;color:#ea580c" id="cp-ai-wav">--</span></div>
+                <div><span style="color:#62b3e0">VA:</span> <span style="font-weight:700;color:#ea580c" id="cp-av-wav">--</span></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title" style="color:#60a5fa">Calibration Log</div>
+              <pre id="cal-log-text" style="background:#0f1420;border-radius:6px;padding:10px;font-size:11px;color:#9ca3af;max-height:200px;overflow-y:auto;white-space:pre-wrap;margin:0">${calLog.join('\n')}</pre>
+            </div>
+
+          </div>
+        </div>
+        </div>
+      `;
+    }
+
+    let pvNewAigain = null, pvNewAvgain = null;
+
+    function bindCalibrationPage() {
+      const drnSel = document.getElementById('cal-drn');
+      if (drnSel) {
+        drnSel.onchange = () => {
+          calDrn = drnSel.value;
+          calGains = { aigain: null, avgain: null, aicc: null, avcc: null, vrms_mv: null, irms_ma: null };
+          calProgress = null;
+          calLog = ['Ready for calibration.'];
+          const panels = document.getElementById('cal-panels');
+          if (panels) panels.style = calDrn ? '' : 'opacity:0.4;pointer-events:none';
+          if (calDrn) { startCalPolling(); calCmd('read_gains', {}, 'Reading current gains...'); }
+          else stopCalPolling();
+        };
+      }
+
+      // Auto calibration buttons
+      document.querySelectorAll('.cal-action').forEach(btn => {
+        btn.onclick = () => {
+          const action = btn.dataset.action;
+          if (action === 'reset_defaults' && !confirm('Reset gain registers to factory defaults?')) return;
+          calCmd(action, {}, `Starting ${action}...`);
+        };
+      });
+
+      // Read gains
+      const readBtn = document.getElementById('read-gains-btn');
+      if (readBtn) readBtn.onclick = () => calCmd('read_gains', {}, 'Reading current gains...');
+
+      // Manual gain entry
+      function parseGainInput(val) {
+        val = val.trim();
+        if (val.startsWith('0x') || val.startsWith('0X')) return parseInt(val, 16);
+        const f = parseFloat(val);
+        if (!isNaN(f) && f > -10 && f < 10) return factorToGain(f);
+        return parseInt(val);
+      }
+
+      const manApply = document.getElementById('man-apply-btn');
+      const manSave = document.getElementById('man-save-btn');
+      const doManual = (save) => {
+        const ai = parseGainInput(document.getElementById('man-aigain').value);
+        const av = parseGainInput(document.getElementById('man-avgain').value);
+        if (isNaN(ai) || isNaN(av)) { calAddLog('Error: invalid gain values'); return; }
+        calCmd('write_gains', { aigain: ai, avgain: av, save }, `Writing gains: AIGAIN=${ai} AVGAIN=${av} save=${save}`);
+      };
+      if (manApply) manApply.onclick = () => doManual(false);
+      if (manSave) manSave.onclick = () => doManual(true);
+
+      // Reference calibration
+      const refCalc = document.getElementById('ref-calc-btn');
+      if (refCalc) refCalc.onclick = () => {
+        const trueV = parseFloat(document.getElementById('ref-voltage').value);
+        const trueI = parseFloat(document.getElementById('ref-current').value);
+        if (!calGains.vrms_mv || !calGains.irms_ma) { calAddLog('Error: read gains first to get live readings'); return; }
+        const measV = calGains.vrms_mv / 1000;
+        const measI = calGains.irms_ma / 1000;
+        const oldVFactor = calGains.avgain !== null ? gainToFactor(calGains.avgain) : 1.0;
+        const oldIFactor = calGains.aigain !== null ? gainToFactor(calGains.aigain) : 1.0;
+        let newVFactor = oldVFactor, newIFactor = oldIFactor;
+        if (!isNaN(trueV) && trueV > 0 && measV > 0) newVFactor = oldVFactor * (trueV / measV);
+        if (!isNaN(trueI) && trueI > 0 && measI > 0) newIFactor = oldIFactor * (trueI / measI);
+        pvNewAigain = factorToGain(newIFactor);
+        pvNewAvgain = factorToGain(newVFactor);
+
+        const setT = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        setT('pv-old-ai', calGains.aigain !== null ? '0x'+(calGains.aigain>>>0).toString(16).toUpperCase().padStart(8,'0') : '--');
+        setT('pv-new-ai', '0x'+(pvNewAigain>>>0).toString(16).toUpperCase().padStart(8,'0'));
+        setT('pv-old-av', calGains.avgain !== null ? '0x'+(calGains.avgain>>>0).toString(16).toUpperCase().padStart(8,'0') : '--');
+        setT('pv-new-av', '0x'+(pvNewAvgain>>>0).toString(16).toUpperCase().padStart(8,'0'));
+        setT('pv-old-v', measV.toFixed(1) + ' V');
+        setT('pv-new-v', (!isNaN(trueV) && trueV > 0 ? trueV.toFixed(1) : measV.toFixed(1)) + ' V');
+        setT('pv-old-i', measI.toFixed(3) + ' A');
+        setT('pv-new-i', (!isNaN(trueI) && trueI > 0 ? trueI.toFixed(3) : measI.toFixed(3)) + ' A');
+
+        document.getElementById('gain-preview-card').style.display = '';
+        calAddLog(`Reference calc: new I factor=${newIFactor.toFixed(6)} V factor=${newVFactor.toFixed(6)}`);
+      };
+
+      // Preview apply/save
+      const pvApply = document.getElementById('pv-apply-btn');
+      const pvSave = document.getElementById('pv-save-btn');
+      if (pvApply) pvApply.onclick = () => { if (pvNewAigain !== null) calCmd('write_gains', { aigain: pvNewAigain, avgain: pvNewAvgain, save: false }, 'Applying calculated gains (no save)...'); };
+      if (pvSave) pvSave.onclick = () => { if (pvNewAigain !== null) calCmd('write_gains', { aigain: pvNewAigain, avgain: pvNewAvgain, save: true }, 'Applying + saving calculated gains to EEPROM...'); };
+
+      if (calDrn) startCalPolling();
     }
 
     // ─── Meter Management Page ───
