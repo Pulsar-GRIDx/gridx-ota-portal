@@ -40,10 +40,10 @@
     .login-error { color: #f87171; font-size: 13px; margin-bottom: 16px; text-align: center; }
 
     /* Layout */
-    .app { display: flex; min-height: 100vh; }
+    .app { display: flex; height: 100vh; overflow: hidden; }
     .sidebar {
       width: 240px; background: #111827; border-right: 1px solid rgba(255,255,255,0.06);
-      padding: 20px 0; display: flex; flex-direction: column;
+      padding: 20px 0; display: flex; flex-direction: column; flex-shrink: 0;
     }
     .sidebar-logo { padding: 0 20px 20px; border-bottom: 1px solid rgba(255,255,255,0.06); }
     .sidebar-logo h2 {
