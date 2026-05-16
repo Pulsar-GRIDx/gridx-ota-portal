@@ -161,9 +161,9 @@ function getMqtt() {
 
     mqttClient.on('connect', () => {
       console.log('[MQTT] Connected');
-      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req', 'gx/+/ack'], { qos: 0 }, (err) => {
+      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req', 'gx/+/ack', 'gx/+/power', 'gx/+/energy', 'gx/+/net_energy'], { qos: 0 }, (err) => {
         if (err) console.error('[MQTT] Subscribe error:', err.message);
-        else console.log('[MQTT] Subscribed to OTA progress, health, nextion & ack topics');
+        else console.log('[MQTT] Subscribed to OTA, health, nextion, ack & telemetry topics');
       });
     });
 
@@ -282,9 +282,46 @@ function handleMqttMessage(topic, buf) {
       const data = JSON.parse(buf.toString());
       const ackType = data.type || 'unknown';
       const key = `${drn}_${ackType}`;
+      if (data.msg && !data.message) data.message = data.msg;
       cmdResponses[key] = { drn, ...data, receivedAt: new Date() };
       broadcastSSE({ type: 'cmd_ack', drn, ack: data });
       console.log(`[CMD] Ack from ${drn}: ${ackType}`);
+    } catch {}
+  }
+
+  if (type === 'power' && buf.length >= 37 && buf[0] === 0x01) {
+    try {
+      const current = buf.readFloatLE(1);
+      const voltage = buf.readFloatLE(5);
+      const active_power = buf.readFloatLE(9);
+      const power_factor = buf.readFloatLE(29);
+      const direction = active_power < 0 ? 'EXPORT' : (active_power > 5 ? 'IMPORT' : 'IDLE');
+      const data = { type: 'power_report', voltage: voltage, current: current, power: active_power, power_factor: power_factor, direction };
+      const key = `${drn}_power_report`;
+      cmdResponses[key] = { drn, ...data, receivedAt: new Date() };
+      broadcastSSE({ type: 'cmd_ack', drn, ack: data });
+    } catch {}
+  }
+
+  if (type === 'energy' && buf.length >= 23 && buf[0] === 0x02) {
+    try {
+      const active_energy = buf.readFloatLE(1);
+      const data = { type: 'energy_report', import_kwh: active_energy / 1000, export_kwh: 0, net_kwh: active_energy / 1000 };
+      const key = `${drn}_energy_report`;
+      cmdResponses[key] = { drn, ...data, receivedAt: new Date() };
+      broadcastSSE({ type: 'cmd_ack', drn, ack: data });
+    } catch {}
+  }
+
+  if (type === 'net_energy' && buf.length >= 17 && buf[0] === 0x07) {
+    try {
+      const import_e = buf.readFloatLE(1);
+      const export_e = buf.readFloatLE(5);
+      const net_e = buf.readFloatLE(9);
+      const data = { type: 'net_energy_report', import_kwh: import_e / 1000, export_kwh: export_e / 1000, net_kwh: net_e / 1000 };
+      const key = `${drn}_net_energy_report`;
+      cmdResponses[key] = { drn, ...data, receivedAt: new Date() };
+      broadcastSSE({ type: 'cmd_ack', drn, ack: data });
     } catch {}
   }
 }
