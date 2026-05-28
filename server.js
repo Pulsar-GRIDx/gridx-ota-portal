@@ -161,9 +161,9 @@ function getMqtt() {
 
     mqttClient.on('connect', () => {
       console.log('[MQTT] Connected');
-      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req', 'gx/+/ack', 'gx/+/power', 'gx/+/energy', 'gx/+/net_energy'], { qos: 0 }, (err) => {
+      mqttClient.subscribe(['gx/+/ota/req', 'gx/+/health', 'gx/+/nextion/req', 'gx/+/ack', 'gx/+/power', 'gx/+/energy', 'gx/+/net_energy', 'gx/+/token'], { qos: 0 }, (err) => {
         if (err) console.error('[MQTT] Subscribe error:', err.message);
-        else console.log('[MQTT] Subscribed to OTA, health, nextion, ack & telemetry topics');
+        else console.log('[MQTT] Subscribed to OTA, health, nextion, ack, token & telemetry topics');
       });
     });
 
@@ -286,6 +286,24 @@ function handleMqttMessage(topic, buf) {
       cmdResponses[key] = { drn, ...data, receivedAt: new Date() };
       broadcastSSE({ type: 'cmd_ack', drn, ack: data });
       console.log(`[CMD] Ack from ${drn}: ${ackType}`);
+    } catch {}
+  }
+
+  if (type === 'token') {
+    try {
+      const data = JSON.parse(buf.toString());
+      const key = `${drn}_token_result`;
+      cmdResponses[key] = { drn, type: 'token_result', data, receivedAt: new Date() };
+      broadcastSSE({ type: 'token_result', drn, data });
+      console.log(`[TOKEN] Result from ${drn}:`, JSON.stringify(data));
+
+      for (const batch of Object.values(tokenBroadcastResults)) {
+        if (batch.results[drn]) {
+          batch.results[drn].status = 'received';
+          batch.results[drn].result = data;
+          batch.results[drn].receivedAt = new Date().toISOString();
+        }
+      }
     } catch {}
   }
 
@@ -975,6 +993,53 @@ app.post('/api/cmd/token', auth, (req, res) => {
   const client = getMqtt();
   client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
   res.json({ ok: true, topic: `gx/${drn}/cmd`, command: cmd });
+});
+
+// ─── SDS Token Broadcast ───
+const tokenBroadcastResults = {};
+
+app.post('/api/cmd/token-broadcast', auth, (req, res) => {
+  const { drns, token, label } = req.body;
+  if (!drns || !Array.isArray(drns) || drns.length === 0) return res.status(400).json({ error: 'Missing or empty drns array' });
+  if (!token) return res.status(400).json({ error: 'Missing token' });
+  if (!/^\d{20}$/.test(token)) return res.status(400).json({ error: 'Token must be 20 digits' });
+
+  const batchId = `batch_${Date.now()}`;
+  const cmd = { type: 'token', token };
+  const client = getMqtt();
+  const results = {};
+
+  for (const drn of drns) {
+    client.publish(`gx/${drn}/cmd`, JSON.stringify(cmd), { qos: 1 });
+    results[drn] = { status: 'sent', sentAt: new Date().toISOString() };
+  }
+
+  tokenBroadcastResults[batchId] = {
+    token, label: label || '', drns, results, createdAt: new Date().toISOString()
+  };
+
+  if (Object.keys(tokenBroadcastResults).length > 50) {
+    const keys = Object.keys(tokenBroadcastResults).sort();
+    delete tokenBroadcastResults[keys[0]];
+  }
+
+  res.json({ ok: true, batchId, sent: drns.length });
+});
+
+app.get('/api/cmd/token-broadcast/:batchId', auth, (req, res) => {
+  const batch = tokenBroadcastResults[req.params.batchId];
+  if (!batch) return res.status(404).json({ error: 'Batch not found' });
+  res.json(batch);
+});
+
+app.get('/api/cmd/token-acks', auth, (req, res) => {
+  const acks = {};
+  for (const [key, val] of Object.entries(cmdResponses)) {
+    if (key.endsWith('_token')) {
+      acks[key] = val;
+    }
+  }
+  res.json({ acks });
 });
 
 app.post('/api/cmd/calibrate', auth, (req, res) => {
