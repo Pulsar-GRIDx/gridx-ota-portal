@@ -3128,6 +3128,29 @@
           : '<span style="color:#f87171">&#10007;</span>';
       }
       renderBroadcastLog();
+      sdsUpdateResultBanner();
+    }
+
+    function sdsUpdateResultBanner() {
+      const resultDiv = document.getElementById('sds-send-result');
+      if (!resultDiv || sdsBroadcastLog.length === 0) return;
+      const latest = sdsBroadcastLog[0];
+      const total = latest.drns.length;
+      const acked = Object.values(latest.results).filter(r => r.status === 'acked').length;
+      const errors = Object.values(latest.results).filter(r => r.status === 'error').length;
+      const pending = total - acked - errors;
+      if (pending > 0) return;
+      if (errors === 0) {
+        const details = latest.drns.map(d => {
+          const r = latest.results[d];
+          return r.resultText || 'Accepted';
+        }).join(', ');
+        resultDiv.innerHTML = `<div class="alert alert-success" style="margin-top:12px">All ${total} meter${total !== 1 ? 's' : ''} acknowledged successfully: ${details}</div>`;
+      } else if (acked === 0) {
+        resultDiv.innerHTML = `<div class="alert alert-error" style="margin-top:12px">All ${total} meter${total !== 1 ? 's' : ''} rejected the token.</div>`;
+      } else {
+        resultDiv.innerHTML = `<div class="alert alert-warning" style="margin-top:12px">${acked} accepted, ${errors} rejected out of ${total} meter${total !== 1 ? 's' : ''}.</div>`;
+      }
     }
 
     function sdsProcessAckData(drn, ackData) {
