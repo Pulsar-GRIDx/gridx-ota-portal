@@ -424,7 +424,7 @@
               </div>
               <div class="sidebar-item" data-page="sdstoken">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>
-                SDS Token Manager
+                SDS Token
               </div>
             </div>
             <div class="sidebar-footer">
@@ -2777,7 +2777,7 @@
     function renderSDSTokenPage() {
       const meters = state.meters || [];
       return `
-        <div class="page-title">SDS Token Manager</div>
+        <div class="page-title">SDS Token</div>
         <div class="page-subtitle">Broadcast STS tokens to one or more meters via MQTT &mdash; credit, key change, supply group code, and management tokens</div>
         <div class="divider"></div>
 
@@ -2787,16 +2787,14 @@
             <div class="card">
               <div class="card-title">Token Entry</div>
               <div class="description" style="font-size:12px;color:#9ca3af;margin-bottom:16px">
-                Enter a 20-digit STS token to send to the selected meters. Supports credit transfer tokens, key change tokens (1st, 2nd, 3rd section), supply group code tokens, and other management tokens.
+                Enter a 20-digit STS token to send to the selected meters. For key change tokens, both the 1st and 2nd section tokens are sent together in sequence.
               </div>
 
               <div class="form-group" style="margin-bottom:16px">
-                <label>Token Type (label only)</label>
+                <label>Token Type</label>
                 <select id="sds-token-type" style="width:100%;max-width:400px;padding:10px 14px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#e0e0e0;font-size:13px">
                   <option value="credit">Credit Transfer Token</option>
-                  <option value="key_change_1">Key Change Token - 1st Section (New Decoder Key)</option>
-                  <option value="key_change_2">Key Change Token - 2nd Section (New Decoder Key)</option>
-                  <option value="key_change_3">Key Change Token - 3rd Section (Supply Group Code)</option>
+                  <option value="key_change">Key Change Tokens</option>
                   <option value="set_tariff">Set Tariff Rate</option>
                   <option value="set_power_limit">Set Maximum Power Limit</option>
                   <option value="clear_credit">Clear Credit</option>
@@ -2805,9 +2803,39 @@
                 </select>
               </div>
 
-              <div class="form-group" style="margin-bottom:16px">
-                <label>STS Token (20 digits)</label>
-                <input type="text" id="sds-token-input" maxlength="24" placeholder="0000 0000 0000 0000 0000" style="width:100%;max-width:400px;font-family:monospace;font-size:18px;letter-spacing:3px;padding:14px 16px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#4ade80">
+              <!-- Single token input (shown for non-key-change types) -->
+              <div id="sds-single-token-area">
+                <div class="form-group" style="margin-bottom:16px">
+                  <label>STS Token (20 digits)</label>
+                  <input type="text" id="sds-token-input" maxlength="24" placeholder="0000 0000 0000 0000 0000" style="width:100%;max-width:400px;font-family:monospace;font-size:18px;letter-spacing:3px;padding:14px 16px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#4ade80">
+                </div>
+              </div>
+
+              <!-- Key change token inputs (shown when key_change is selected) -->
+              <div id="sds-keychange-token-area" style="display:none">
+                <div class="form-group" style="margin-bottom:12px">
+                  <label style="color:#f59e0b">1st Section Token &mdash; New Decoder Key (high bytes)</label>
+                  <input type="text" id="sds-kc-token-1" maxlength="24" placeholder="0000 0000 0000 0000 0000" style="width:100%;max-width:400px;font-family:monospace;font-size:18px;letter-spacing:3px;padding:14px 16px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#f59e0b">
+                </div>
+                <div class="form-group" style="margin-bottom:12px">
+                  <label style="color:#f59e0b">2nd Section Token &mdash; New Decoder Key (low bytes)</label>
+                  <input type="text" id="sds-kc-token-2" maxlength="24" placeholder="0000 0000 0000 0000 0000" style="width:100%;max-width:400px;font-family:monospace;font-size:18px;letter-spacing:3px;padding:14px 16px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#f59e0b">
+                </div>
+                <div style="margin-bottom:12px">
+                  <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:12px;color:#9ca3af">
+                    <input type="checkbox" id="sds-kc-has-3rd" style="width:14px;height:14px;accent-color:#f59e0b;cursor:pointer">
+                    Include 3rd Section Token (Supply Group Code change)
+                  </label>
+                </div>
+                <div id="sds-kc-token-3-area" style="display:none">
+                  <div class="form-group" style="margin-bottom:16px">
+                    <label style="color:#f59e0b">3rd Section Token &mdash; Supply Group Code</label>
+                    <input type="text" id="sds-kc-token-3" maxlength="24" placeholder="0000 0000 0000 0000 0000" style="width:100%;max-width:400px;font-family:monospace;font-size:18px;letter-spacing:3px;padding:14px 16px;background:#0f1420;border:1px solid #2d3548;border-radius:8px;color:#f59e0b">
+                  </div>
+                </div>
+                <div style="font-size:11px;color:#62b3e0;margin-bottom:16px;padding:8px 12px;background:rgba(59,130,246,0.08);border-radius:6px;border-left:3px solid #3b82f6">
+                  Tokens will be sent in order (1st, 2nd, then 3rd if included) with a 2-second delay between each. The meter must receive all tokens within 180 seconds.
+                </div>
               </div>
 
               <div class="form-group" style="margin-bottom:16px">
@@ -2824,21 +2852,6 @@
               </div>
 
               <div id="sds-send-result"></div>
-            </div>
-
-            <!-- Key Change Sequence Helper -->
-            <div class="card" id="sds-key-change-info">
-              <div class="card-title" style="color:#f59e0b">
-                <svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2" style="width:18px;height:18px;vertical-align:middle;margin-right:6px"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-                Key Change Sequence
-              </div>
-              <div style="font-size:12px;color:#9ca3af;line-height:1.7">
-                Key changes require <strong style="color:#e0e0e0">2 or 3 tokens</strong> sent in sequence within <strong style="color:#e0e0e0">180 seconds</strong>:<br>
-                <span style="color:#60a5fa">1.</span> 1st Section Token &mdash; carries new key high bytes, KRN, key type<br>
-                <span style="color:#60a5fa">2.</span> 2nd Section Token &mdash; carries new key low bytes, tariff index<br>
-                <span style="color:#60a5fa">3.</span> 3rd Section Token (if needed) &mdash; carries new Supply Group Code<br><br>
-                Send each token one at a time in order. The meter holds state between tokens. After the final token, the new key activates.
-              </div>
             </div>
 
             <!-- Broadcast Log -->
@@ -2881,33 +2894,65 @@
       `;
     }
 
+    function sdsFormatTokenInput(el) {
+      let val = el.value.replace(/[^\d]/g, '');
+      if (val.length > 20) val = val.slice(0, 20);
+      let formatted = '';
+      for (let i = 0; i < val.length; i++) {
+        if (i > 0 && i % 4 === 0) formatted += ' ';
+        formatted += val[i];
+      }
+      el.value = formatted;
+    }
+
+    function sdsIsValid20(el) {
+      return /^\d{20}$/.test((el.value || '').replace(/\s/g, ''));
+    }
+
     function bindSDSTokenPage() {
+      const typeSelect = document.getElementById('sds-token-type');
+      const singleArea = document.getElementById('sds-single-token-area');
+      const kcArea = document.getElementById('sds-keychange-token-area');
       const tokenInput = document.getElementById('sds-token-input');
+      const kcToken1 = document.getElementById('sds-kc-token-1');
+      const kcToken2 = document.getElementById('sds-kc-token-2');
+      const kcToken3 = document.getElementById('sds-kc-token-3');
+      const kcHas3rd = document.getElementById('sds-kc-has-3rd');
+      const kc3rdArea = document.getElementById('sds-kc-token-3-area');
       const sendBtn = document.getElementById('sds-send-btn');
       const searchInput = document.getElementById('sds-meter-search');
       const countSpan = document.getElementById('sds-selected-count');
 
+      function isKeyChange() { return typeSelect.value === 'key_change'; }
+
+      function updateVisibility() {
+        const kc = isKeyChange();
+        singleArea.style.display = kc ? 'none' : '';
+        kcArea.style.display = kc ? '' : 'none';
+        updateCount();
+      }
+
       function updateCount() {
         const n = sdsSelectedMeters.size;
         countSpan.textContent = `${n} meter${n !== 1 ? 's' : ''} selected`;
-        sendBtn.disabled = n === 0 || !isValidToken();
-      }
-
-      function isValidToken() {
-        const raw = (tokenInput.value || '').replace(/\s/g, '');
-        return /^\d{20}$/.test(raw);
-      }
-
-      tokenInput.addEventListener('input', () => {
-        let val = tokenInput.value.replace(/[^\d]/g, '');
-        if (val.length > 20) val = val.slice(0, 20);
-        let formatted = '';
-        for (let i = 0; i < val.length; i++) {
-          if (i > 0 && i % 4 === 0) formatted += ' ';
-          formatted += val[i];
+        if (isKeyChange()) {
+          const valid1 = sdsIsValid20(kcToken1);
+          const valid2 = sdsIsValid20(kcToken2);
+          const valid3 = !kcHas3rd.checked || sdsIsValid20(kcToken3);
+          sendBtn.disabled = n === 0 || !valid1 || !valid2 || !valid3;
+        } else {
+          sendBtn.disabled = n === 0 || !sdsIsValid20(tokenInput);
         }
-        tokenInput.value = formatted;
+      }
+
+      typeSelect.addEventListener('change', updateVisibility);
+      kcHas3rd.addEventListener('change', () => {
+        kc3rdArea.style.display = kcHas3rd.checked ? '' : 'none';
         updateCount();
+      });
+
+      [tokenInput, kcToken1, kcToken2, kcToken3].forEach(el => {
+        el.addEventListener('input', () => { sdsFormatTokenInput(el); updateCount(); });
       });
 
       document.querySelectorAll('.sds-meter-cb').forEach(cb => {
@@ -2940,42 +2985,75 @@
       });
 
       sendBtn.onclick = async () => {
-        if (!isValidToken() || sdsSelectedMeters.size === 0) return;
-        const token = tokenInput.value.replace(/\s/g, '');
         const drns = Array.from(sdsSelectedMeters);
-        const label = document.getElementById('sds-token-type').value;
+        if (drns.length === 0) return;
         const notes = document.getElementById('sds-token-notes').value;
+        const resultDiv = document.getElementById('sds-send-result');
 
         sendBtn.disabled = true;
         sendBtn.textContent = 'Sending...';
 
         try {
-          const res = await api('/api/cmd/token-broadcast', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ drns, token, label })
-          });
+          if (isKeyChange()) {
+            const tokens = [
+              kcToken1.value.replace(/\s/g, ''),
+              kcToken2.value.replace(/\s/g, '')
+            ];
+            if (kcHas3rd.checked) tokens.push(kcToken3.value.replace(/\s/g, ''));
 
-          const logEntry = {
-            batchId: res.batchId,
-            token, label, notes,
-            drns: [...drns],
-            sentAt: new Date().toISOString(),
-            results: {}
-          };
-          drns.forEach(d => logEntry.results[d] = { status: 'sent' });
-          sdsBroadcastLog.unshift(logEntry);
+            const labels = ['key_change_1', 'key_change_2', 'key_change_3'];
+            const allLogEntries = [];
 
-          document.getElementById('sds-send-result').innerHTML = `
-            <div class="alert alert-success" style="margin-top:12px">
-              Token sent to ${drns.length} meter${drns.length !== 1 ? 's' : ''}. Waiting for acknowledgements...
-            </div>`;
+            for (let i = 0; i < tokens.length; i++) {
+              if (i > 0) {
+                resultDiv.innerHTML = `<div class="alert alert-info" style="margin-top:12px">Sending token ${i + 1} of ${tokens.length} in 2 seconds...</div>`;
+                await new Promise(r => setTimeout(r, 2000));
+              }
 
-          renderBroadcastLog();
-          startSdsAckPolling(logEntry);
+              const res = await api('/api/cmd/token-broadcast', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ drns, token: tokens[i], label: labels[i] })
+              });
+
+              const logEntry = {
+                batchId: res.batchId,
+                token: tokens[i], label: labels[i], notes: notes + (tokens.length > 1 ? ` (${i+1}/${tokens.length})` : ''),
+                drns: [...drns], sentAt: new Date().toISOString(), results: {}
+              };
+              drns.forEach(d => logEntry.results[d] = { status: 'sent' });
+              sdsBroadcastLog.unshift(logEntry);
+              allLogEntries.push(logEntry);
+            }
+
+            resultDiv.innerHTML = `<div class="alert alert-success" style="margin-top:12px">All ${tokens.length} key change tokens sent to ${drns.length} meter${drns.length !== 1 ? 's' : ''} in sequence. Waiting for acknowledgements...</div>`;
+            renderBroadcastLog();
+            allLogEntries.forEach(e => startSdsAckPolling(e));
+
+          } else {
+            const token = tokenInput.value.replace(/\s/g, '');
+            const label = typeSelect.value;
+
+            const res = await api('/api/cmd/token-broadcast', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ drns, token, label })
+            });
+
+            const logEntry = {
+              batchId: res.batchId,
+              token, label, notes,
+              drns: [...drns], sentAt: new Date().toISOString(), results: {}
+            };
+            drns.forEach(d => logEntry.results[d] = { status: 'sent' });
+            sdsBroadcastLog.unshift(logEntry);
+
+            resultDiv.innerHTML = `<div class="alert alert-success" style="margin-top:12px">Token sent to ${drns.length} meter${drns.length !== 1 ? 's' : ''}. Waiting for acknowledgements...</div>`;
+            renderBroadcastLog();
+            startSdsAckPolling(logEntry);
+          }
         } catch (err) {
-          document.getElementById('sds-send-result').innerHTML = `
-            <div class="alert alert-error" style="margin-top:12px">Error: ${err.message || 'Failed to send'}</div>`;
+          resultDiv.innerHTML = `<div class="alert alert-error" style="margin-top:12px">Error: ${err.message || 'Failed to send'}</div>`;
         }
 
         sendBtn.disabled = false;
@@ -2983,7 +3061,7 @@
         updateCount();
       };
 
-      updateCount();
+      updateVisibility();
       renderBroadcastLog();
     }
 
@@ -2997,7 +3075,7 @@
 
       container.innerHTML = sdsBroadcastLog.map(entry => {
         const tokenTypes = {
-          credit: 'Credit Transfer', key_change_1: 'Key Change 1st', key_change_2: 'Key Change 2nd',
+          credit: 'Credit Transfer', key_change: 'Key Change', key_change_1: 'Key Change 1st', key_change_2: 'Key Change 2nd',
           key_change_3: 'Key Change 3rd (SGC)', set_tariff: 'Set Tariff', set_power_limit: 'Power Limit',
           clear_credit: 'Clear Credit', clear_tamper: 'Clear Tamper', management: 'Management'
         };
