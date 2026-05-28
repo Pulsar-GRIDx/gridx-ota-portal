@@ -3112,9 +3112,45 @@
       }).join('');
     }
 
+    function sdsUpdateMeterStatus(drn, status, resultText) {
+      for (const entry of sdsBroadcastLog) {
+        if (entry.results[drn] && entry.results[drn].status === 'sent') {
+          entry.results[drn].status = status;
+          entry.results[drn].resultText = resultText;
+          entry.results[drn].receivedAt = new Date().toISOString();
+          break;
+        }
+      }
+      const statusEl = document.querySelector(`.sds-meter-status[data-drn="${drn}"]`);
+      if (statusEl) {
+        statusEl.innerHTML = status === 'acked'
+          ? '<span style="color:#4ade80">&#10003;</span>'
+          : '<span style="color:#f87171">&#10007;</span>';
+      }
+      renderBroadcastLog();
+    }
+
+    function sdsProcessAckData(drn, ackData) {
+      if (!ackData) return;
+      // Skip intermediate "queued" / "busy" acks — only act on final results
+      if (ackData.status === 'queued' || ackData.status === 'busy') return;
+
+      // token_result from gx/{DRN}/token topic: array format
+      if (ackData.data && Array.isArray(ackData.data)) {
+        const displayMsg = ackData.data[3] || '';
+        const isAccept = displayMsg.toLowerCase().includes('accept') || displayMsg.toLowerCase().includes('credit');
+        sdsUpdateMeterStatus(drn, isAccept ? 'acked' : 'error', displayMsg);
+        return;
+      }
+
+      // ack from gx/{DRN}/ack topic: {type:"token", status:"ok"/"error", result:0/1}
+      const isOk = ackData.status === 'ok' || ackData.result === 0;
+      sdsUpdateMeterStatus(drn, isOk ? 'acked' : 'error', isOk ? 'Accepted' : (ackData.detail || ackData.status || 'Rejected'));
+    }
+
     function startSdsAckPolling(logEntry) {
       let checks = 0;
-      const maxChecks = 30;
+      const maxChecks = 60;
       const interval = setInterval(async () => {
         checks++;
         if (checks > maxChecks || currentPage !== 'sdstoken') {
@@ -3122,36 +3158,24 @@
           return;
         }
 
-        try {
-          const allDone = logEntry.drns.every(d => logEntry.results[d]?.status === 'acked' || logEntry.results[d]?.status === 'error');
-          if (allDone) { clearInterval(interval); return; }
+        const allDone = logEntry.drns.every(d => logEntry.results[d]?.status === 'acked' || logEntry.results[d]?.status === 'error');
+        if (allDone) { clearInterval(interval); return; }
 
-          for (const drn of logEntry.drns) {
-            if (logEntry.results[drn]?.status !== 'sent') continue;
-            try {
-              const acks = await api(`/api/cmd/acks/${drn}`);
-              if (acks) {
-                const tokenAck = acks[`${drn}_token`];
-                const tokenResult = acks[`${drn}_token_result`];
-                if (tokenAck || tokenResult) {
-                  const ackData = tokenResult || tokenAck;
-                  const isOk = ackData.status === 'ok' || ackData.result === 0 || (ackData.data && Array.isArray(ackData.data) && ackData.data[3] === 'Accept');
-                  logEntry.results[drn].status = isOk ? 'acked' : 'error';
-                  logEntry.results[drn].resultText = isOk ? 'Accepted' : (ackData.status || 'Rejected');
+        for (const drn of logEntry.drns) {
+          if (logEntry.results[drn]?.status !== 'sent') continue;
+          try {
+            const acks = await api(`/api/cmd/acks/${drn}`);
+            if (!acks) continue;
 
-                  const statusEl = document.querySelector(`.sds-meter-status[data-drn="${drn}"]`);
-                  if (statusEl) {
-                    statusEl.innerHTML = isOk
-                      ? '<span style="color:#4ade80">&#10003;</span>'
-                      : '<span style="color:#f87171">&#10007;</span>';
-                  }
-                }
-              }
-            } catch {}
-          }
-          renderBroadcastLog();
-        } catch {}
-      }, 2000);
+            // Check token result first (most detailed), then ack
+            const tokenResult = acks[`${drn}_token_result`];
+            if (tokenResult) { sdsProcessAckData(drn, tokenResult); continue; }
+
+            const tokenAck = acks[`${drn}_token`];
+            if (tokenAck) sdsProcessAckData(drn, tokenAck);
+          } catch {}
+        }
+      }, 3000);
     }
 
     // ─── Init ───
