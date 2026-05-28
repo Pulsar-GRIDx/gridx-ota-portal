@@ -3164,14 +3164,14 @@
         for (const drn of logEntry.drns) {
           if (logEntry.results[drn]?.status !== 'sent') continue;
           try {
-            const acks = await api(`/api/cmd/acks/${drn}`);
-            if (!acks) continue;
+            const resp = await api(`/api/cmd/acks/${drn}`);
+            if (!resp) continue;
+            const data = resp.acks || resp;
 
-            // Check token result first (most detailed), then ack
-            const tokenResult = acks[`${drn}_token_result`];
+            const tokenResult = data[`${drn}_token_result`];
             if (tokenResult) { sdsProcessAckData(drn, tokenResult); continue; }
 
-            const tokenAck = acks[`${drn}_token`];
+            const tokenAck = data[`${drn}_token`];
             if (tokenAck) sdsProcessAckData(drn, tokenAck);
           } catch {}
         }
